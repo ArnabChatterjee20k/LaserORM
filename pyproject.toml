@@ -1,0 +1,30 @@
+[project]
+name = "laserorm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+sqlite = [
+    "aiosqlite>=0.21.0",
+]
+postgres = [
+    "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.11",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "black",
+    "pytest>=8.4.2",
+    "pytest-cov>=6.3.0",
+    "pytest-asyncio>=1.2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["laserorm*"]
+exclude = ["tests*"]
