@@ -1,6 +1,6 @@
 from abc import ABC
 from dataclasses import dataclass, asdict, fields, MISSING, field
-from typing import get_origin, get_args, Union, Optional, Any, ClassVar, TypedDict
+from typing import get_origin, get_args, Union, Optional, Any, ClassVar, TypedDict, Type
 from types import UnionType
 import datetime
 
@@ -13,15 +13,21 @@ class CurrentTimeStamp:
     pass
 
 
-class FieldMetadataOptions(TypedDict):
+# using dataclass so that we can easily use it as typing + setting defaults
+@dataclass
+class FieldMetadataOptions:
     index: Optional[bool] = False
     primary_key: Optional[bool] = False
     unique: Optional[bool] = False
     auto_increment: Optional[bool] = False
 
 
-def create_field(metadata: FieldMetadataOptions, **fieldOptions):
-    return field(metadata=metadata, **fieldOptions)
+def create_field(
+    metadata: FieldMetadataOptions, default_factory=MissingDefault, **fieldOptions
+):
+    return field(
+        metadata=asdict(metadata), default_factory=default_factory, **fieldOptions
+    )
 
 
 @dataclass
@@ -101,6 +107,9 @@ class Model(ABC):
                 else:
                     default = field.default_factory()
 
+            elif field.default is not MISSING:
+                default = field.default
+
             schema[field_name] = {
                 "type": None,
                 "sub_type": None,
@@ -137,3 +146,46 @@ class Model(ABC):
                 ]
 
         return schema
+
+    @classmethod
+    def to_model(cls, model_name: str = None) -> Type["Model"]:
+        """
+        Convert a dataclass-based schema to a Model class.
+
+        Args:
+            model_name: Optional name for the generated model class.
+                       If not provided, uses the schema class name.
+
+        Returns:
+            A dynamically generated Model class with the same fields and annotations
+        """
+        # to avoid circular imports
+        from .model import Model as BaseModel, Column
+
+        if model_name is None:
+            model_name = cls.__name__
+
+        annotations = {}
+
+        for field_obj in fields(cls):
+            field_name = field_obj.name
+            field_type = field_obj.type
+
+            # Skip excluded fields to avoid conflicts with Model's built-in fields
+            if field_name in cls.exclude:
+                continue
+
+            annotations[field_name] = field_type
+
+        # Create a new class that inherits from BaseModel
+        class GeneratedModel(BaseModel):
+            # Set class attributes before metaclass processing
+            exclude = ["id"]  # Default exclude list
+            schema_exclude = []  # Default schema exclude list
+            __annotations__ = annotations
+
+        # Set the class name and module
+        GeneratedModel.__name__ = model_name
+        GeneratedModel.__module__ = cls.__module__
+
+        return GeneratedModel

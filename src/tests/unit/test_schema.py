@@ -1,0 +1,467 @@
+"""
+Unit tests for laserorm.core.schema module
+"""
+
+import pytest
+from dataclasses import dataclass, field, MISSING
+from datetime import datetime
+from typing import Optional, Union, List, Dict
+from laserorm.core.schema import (
+    Model,
+    MissingDefault,
+    CurrentTimeStamp,
+    FieldMetadataOptions,
+    create_field,
+)
+
+
+class TestMissingDefault:
+    """Test MissingDefault class"""
+
+    def test_missing_default_creation(self):
+        """Test creating MissingDefault instance"""
+        missing = MissingDefault()
+        assert isinstance(missing, MissingDefault)
+
+
+class TestCurrentTimeStamp:
+    """Test CurrentTimeStamp class"""
+
+    def test_current_timestamp_creation(self):
+        """Test creating CurrentTimeStamp instance"""
+        timestamp = CurrentTimeStamp()
+        assert isinstance(timestamp, CurrentTimeStamp)
+
+
+class TestFieldMetadataOptions:
+    """Test FieldMetadataOptions TypedDict"""
+
+    def test_field_metadata_options_creation(self):
+        """Test creating FieldMetadataOptions with default values"""
+        metadata = FieldMetadataOptions()
+        # FieldMetadataOptions should provide default values as specified in the TypedDict
+        assert metadata.index is False
+        assert metadata.primary_key is False
+        assert metadata.unique is False
+        assert metadata.auto_increment is False
+
+    def test_field_metadata_options_custom_values(self):
+        """Test creating FieldMetadataOptions with custom values"""
+        metadata = FieldMetadataOptions(
+            index=True, primary_key=True, unique=True, auto_increment=True
+        )
+        assert metadata.index is True
+        assert metadata.primary_key is True
+        assert metadata.unique is True
+        assert metadata.auto_increment is True
+
+
+class TestCreateField:
+    """Test create_field function"""
+
+    def test_create_field_basic(self):
+        """Test creating a field with basic metadata"""
+        metadata = FieldMetadataOptions(index=True)
+        field_obj = create_field(metadata, default_factory=lambda: "test")
+
+        assert field_obj.default_factory() == "test"
+        assert field_obj.metadata["index"] is True
+        # create_field should merge metadata with defaults
+        assert field_obj.metadata["primary_key"] is False
+        assert field_obj.metadata["unique"] is False
+        assert field_obj.metadata["auto_increment"] is False
+
+    def test_create_field_with_all_options(self):
+        """Test creating a field with all metadata options"""
+        metadata = FieldMetadataOptions(
+            index=True, primary_key=True, unique=True, auto_increment=True
+        )
+        field_obj = create_field(metadata, default_factory=lambda: 42, init=False)
+
+        assert field_obj.default_factory() == 42
+        assert field_obj.init is False
+        assert field_obj.metadata["index"] is True
+        assert field_obj.metadata["primary_key"] is True
+        assert field_obj.metadata["unique"] is True
+        assert field_obj.metadata["auto_increment"] is True
+
+
+class TestSchemaModel:
+    """Test Model class from schema module"""
+
+    def test_model_inheritance(self):
+        """Test Model class can be inherited"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+
+        assert issubclass(UserSchema, Model)
+
+    def test_model_has_id_field(self):
+        """Test Model has id field with correct metadata"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+
+        # Check that id field exists
+        user = UserSchema(name="John")
+        assert hasattr(user, "id")
+        assert user.id is None  # init=False means it's not in __init__
+
+    def test_model_exclude_class_variables(self):
+        """Test Model has exclude and schema_exclude class variables"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+
+        assert hasattr(UserSchema, "exclude")
+        assert hasattr(UserSchema, "schema_exclude")
+        assert isinstance(UserSchema.exclude, list)
+        assert isinstance(UserSchema.schema_exclude, list)
+
+    def test_model_to_dict(self):
+        """Test to_dict method"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: Optional[int] = None
+
+        user = UserSchema(name="Alice", email="alice@example.com", age=30)
+        data = user.to_dict()
+
+        assert data["name"] == "Alice"
+        assert data["email"] == "alice@example.com"
+        assert data["age"] == 30
+        assert "id" not in data  # id should be excluded by default
+
+    def test_model_to_dict_exclude_parameter(self):
+        """Test to_dict with exclude parameter"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: int
+
+        user = UserSchema(name="Bob", email="bob@example.com", age=25)
+        data = user.to_dict(exclude=["age"])
+
+        assert data["name"] == "Bob"
+        assert data["email"] == "bob@example.com"
+        assert "age" not in data
+
+    def test_model_to_dict_include_none(self):
+        """Test to_dict include_none parameter"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: Optional[int] = None
+
+        user = UserSchema(name="Charlie", email="charlie@example.com")
+
+        # Test with include_none=True (default)
+        data_with_none = user.to_dict()
+        assert "age" in data_with_none
+        assert data_with_none["age"] is None
+
+        # Test with include_none=False
+        data_without_none = user.to_dict(include_none=False)
+        assert "age" not in data_without_none
+
+    def test_model_get_fields(self):
+        """Test get_fields method"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: int
+
+        user = UserSchema(name="David", email="david@example.com", age=35)
+        fields = user.get_fields()
+
+        assert "name" in fields
+        assert "email" in fields
+        assert "age" in fields
+        assert "id" in fields  # id field should be included
+
+    def test_model_get_values(self):
+        """Test get_values method for database insertion"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: Optional[int] = None
+
+        user = UserSchema(name="Eve", email="eve@example.com", age=40)
+        values = user.get_values()
+
+        assert values["name"] == "Eve"
+        assert values["email"] == "eve@example.com"
+        assert values["age"] == 40
+        assert "id" not in values  # id should be excluded by default
+
+    def test_model_get_values_with_none(self):
+        """Test get_values handles None values based on type annotations"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            phone: str  # Required field
+            age: Optional[int] = None  # Optional field with default
+
+        user = UserSchema(name="Frank", email="frank@example.com", phone="123-456-7890")
+        values = user.get_values()
+
+        assert values["name"] == "Frank"
+        assert values["email"] == "frank@example.com"
+        assert values["phone"] == "123-456-7890"
+        assert "age" in values  # Optional[int] allows None
+        assert values["age"] is None
+
+    def test_model_get_schema(self):
+        """Test get_schema class method"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: Optional[int] = None
+
+        schema = UserSchema.get_schema()
+
+        # Check that all fields are in schema
+        assert "name" in schema
+        assert "email" in schema
+        assert "age" in schema
+        assert "id" in schema
+
+        # Check schema structure for a field
+        name_schema = schema["name"]
+        assert "type" in name_schema
+        assert "sub_type" in name_schema
+        assert "default" in name_schema
+        assert "primary_key" in name_schema
+        assert "index" in name_schema
+        assert "unique" in name_schema
+        assert "auto_increment" in name_schema
+
+    def test_model_get_schema_exclude_parameter(self):
+        """Test get_schema with exclude parameter"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: int
+
+        schema = UserSchema.get_schema(exclude=["age"])
+
+        assert "name" in schema
+        assert "email" in schema
+        assert "age" not in schema
+
+    def test_model_get_schema_schema_exclude(self):
+        """Test get_schema respects schema_exclude class variable"""
+
+        @dataclass
+        class UserSchema(Model):
+            schema_exclude = ["internal_id"]
+            name: str
+            email: str
+            internal_id: str
+
+        schema = UserSchema.get_schema()
+
+        assert "name" in schema
+        assert "email" in schema
+        assert "internal_id" not in schema
+
+    def test_model_get_schema_union_types(self):
+        """Test get_schema handles Union types correctly"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            age: Union[int, None]  # Same as Optional[int]
+            status: Union[str, int]
+
+        schema = UserSchema.get_schema()
+
+        # Check Union type handling
+        age_schema = schema["age"]
+        assert isinstance(age_schema["type"], list)
+        assert "int" in age_schema["type"]
+        assert "NoneType" in age_schema["type"]
+
+        status_schema = schema["status"]
+        assert isinstance(status_schema["type"], list)
+        assert "str" in status_schema["type"]
+        assert "int" in status_schema["type"]
+
+    def test_model_get_schema_list_types(self):
+        """Test get_schema handles list types correctly"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            tags: List[str]
+            metadata: Dict[str, str]
+
+        schema = UserSchema.get_schema()
+
+        # Check list type handling
+        tags_schema = schema["tags"]
+        assert tags_schema["type"] == "json"
+        assert tags_schema["sub_type"] == "list"
+
+        # Check dict type handling
+        metadata_schema = schema["metadata"]
+        assert metadata_schema["type"] == "json"
+        assert metadata_schema["sub_type"] == "dict"
+
+    def test_model_get_schema_default_values(self):
+        """Test get_schema handles different types of default values correctly"""
+
+        @dataclass
+        class UserSchema(Model):
+            # Field with no default (should be MissingDefault)
+            name: str
+
+            # Field with simple default value (should preserve the value)
+            age: int = 25
+
+            # Field with boolean default (should preserve the value)
+            is_active: bool = True
+
+            # Field with default_factory for datetime (should be CurrentTimeStamp)
+            created_at: datetime = field(default_factory=datetime.now)
+
+            # Field with default_factory for list (should call the factory)
+            tags: list[str] = field(default_factory=list)
+
+            # Field with default_factory for dict (should call the factory)
+            metadata: dict = field(default_factory=dict)
+
+        schema = UserSchema.get_schema()
+
+        # Test field with no default
+        name_schema = schema["name"]
+        assert isinstance(name_schema["default"], MissingDefault)
+
+        # Test simple default values - these should be preserved as-is
+        age_schema = schema["age"]
+        assert age_schema["default"] == 25, f"Expected 25, got {age_schema['default']}"
+
+        is_active_schema = schema["is_active"]
+        assert (
+            is_active_schema["default"] is True
+        ), f"Expected True, got {is_active_schema['default']}"
+
+        # Test default_factory for datetime - should be CurrentTimeStamp
+        created_at_schema = schema["created_at"]
+        assert isinstance(created_at_schema["default"], CurrentTimeStamp)
+
+        # Test default_factory for list - should be callable and return empty list
+        tags_schema = schema["tags"]
+        assert tags_schema["default"] == []
+
+        # Test default_factory for dict - should be callable and return empty dict
+        metadata_schema = schema["metadata"]
+        assert metadata_schema["default"] == {}
+
+    def test_model_get_schema_metadata(self):
+        """Test get_schema preserves field metadata"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str = field(metadata={"index": True, "unique": True})
+            email: str = field(metadata={"primary_key": True})
+            age: int = field(metadata={"auto_increment": True})
+
+        schema = UserSchema.get_schema()
+
+        # Check metadata preservation
+        name_schema = schema["name"]
+        assert name_schema["index"] is True
+        assert name_schema["unique"] is True
+        assert name_schema["primary_key"] is False
+
+        email_schema = schema["email"]
+        assert email_schema["primary_key"] is True
+        assert email_schema["index"] is False
+
+        age_schema = schema["age"]
+        assert age_schema["auto_increment"] is True
+        assert age_schema["index"] is False
+
+    def test_model_custom_exclude(self):
+        """Test Model with custom exclude list"""
+
+        @dataclass
+        class UserSchema(Model):
+            exclude = ["password", "secret_key"]
+            name: str
+            email: str
+            password: str
+            secret_key: str
+
+        user = UserSchema(
+            name="Grace", email="grace@example.com", password="secret", secret_key="key"
+        )
+
+        # Test to_dict excludes custom fields
+        data = user.to_dict()
+        assert "name" in data
+        assert "email" in data
+        assert "password" not in data
+        assert "secret_key" not in data
+
+        # Test get_values excludes custom fields
+        values = user.get_values()
+        assert "name" in values
+        assert "email" in values
+        assert "password" not in values
+        assert "secret_key" not in values
+
+    def test_model_inheritance_with_schema(self):
+        """Test Model inheritance with schema methods"""
+
+        # using kw_only so that we can mix up the required fields and default fields together in parent child in random order
+        @dataclass(kw_only=True)
+        class BaseSchema(Model):
+            name: str
+            created_at: datetime = field(default_factory=datetime.now)
+
+        @dataclass(kw_only=True)
+        class UserSchema(BaseSchema):
+            email: str
+            age: int = field(
+                default_factory=lambda: 0
+            )  # Add default to avoid field ordering issues
+
+        user = UserSchema(name="Henry", email="henry@example.com", age=55)
+
+        # Test that all fields are accessible
+        assert user.name == "Henry"
+        assert user.email == "henry@example.com"
+        assert user.age == 55
+        assert isinstance(user.created_at, datetime)
+
+        # Test schema includes all fields
+        schema = UserSchema.get_schema()
+        assert "name" in schema
+        assert "email" in schema
+        assert "age" in schema
+        assert "created_at" in schema
+        assert "id" in schema
