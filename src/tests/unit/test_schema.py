@@ -465,3 +465,231 @@ class TestSchemaModel:
         assert "age" in schema
         assert "created_at" in schema
         assert "id" in schema
+
+    def test_to_model_basic_conversion(self):
+        """Test basic conversion from schema to model"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: int = 25
+
+        # Convert schema to model
+        UserModel = UserSchema.to_model()
+
+        # Test that it returns a class
+        assert isinstance(UserModel, type)
+        assert UserModel.__name__ == "UserSchema"
+
+        # Test that it inherits from StaticModel
+        from laserorm.core.model import Model as StaticModel
+
+        assert issubclass(UserModel, StaticModel)
+
+        # Test that annotations are set correctly
+        assert hasattr(UserModel, "__annotations__")
+        annotations = UserModel.__annotations__
+        assert "name" in annotations
+        assert "email" in annotations
+        assert "age" in annotations
+
+    def test_to_model_instance_creation(self):
+        """Test creating instances from converted model"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: int = 25
+
+        UserModel = UserSchema.to_model()
+
+        # Test creating instance with required fields
+        user = UserModel(name="John", email="john@example.com")
+
+        # Test that fields are accessible
+        assert user.name == "John"
+        assert user.email == "john@example.com"
+        assert user.age == 25  # Should use default value
+
+    def test_to_model_with_defaults(self):
+        """Test conversion with various default values"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: int = 30
+            is_active: bool = True
+            tags: list[str] = field(default_factory=list)
+
+        UserModel = UserSchema.to_model()
+
+        # Test instance creation with defaults
+        user = UserModel(name="Alice", email="alice@example.com")
+
+        assert user.name == "Alice"
+        assert user.email == "alice@example.com"
+        assert user.age == 30
+        assert user.is_active is True
+        # The default_factory should be called, not the class itself
+        assert isinstance(user.tags, list)
+        assert user.tags == []
+
+    def test_to_model_excludes_id_field(self):
+        """Test that to_model excludes the id field to avoid conflicts"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+
+        UserModel = UserSchema.to_model()
+
+        # Test that id is not in annotations (should be excluded)
+        annotations = UserModel.__annotations__
+        assert "id" not in annotations
+
+        # Test that we can still create instances
+        user = UserModel(name="Bob", email="bob@example.com")
+        assert user.name == "Bob"
+        assert user.email == "bob@example.com"
+
+    def test_to_model_with_union_types(self):
+        """Test conversion with Union types"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            age: Union[int, None]
+            status: Union[str, int]
+
+        UserModel = UserSchema.to_model()
+
+        # Test instance creation with Union types
+        user = UserModel(name="Charlie", age=25, status="active")
+
+        assert user.name == "Charlie"
+        assert user.age == 25
+        assert user.status == "active"
+
+        # Test with None value
+        user2 = UserModel(name="David", age=None, status=1)
+        assert user2.age is None
+        assert user2.status == 1
+
+    def test_to_model_with_list_dict_types(self):
+        """Test conversion with list and dict types"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            tags: List[str]
+            metadata: Dict[str, str]
+
+        UserModel = UserSchema.to_model()
+
+        # Test instance creation
+        user = UserModel(name="Eve", tags=["admin", "user"], metadata={"role": "admin"})
+
+        assert user.name == "Eve"
+        assert user.tags == ["admin", "user"]
+        assert user.metadata == {"role": "admin"}
+
+    def test_to_model_inheritance(self):
+        """Test conversion with inheritance"""
+
+        @dataclass(kw_only=True)
+        class BaseSchema(Model):
+            name: str
+            created_at: datetime = field(default_factory=datetime.now)
+
+        @dataclass(kw_only=True)
+        class UserSchema(BaseSchema):
+            email: str
+            age: int = 25
+
+        UserModel = UserSchema.to_model()
+
+        # Test that it inherits from StaticModel, not from the schema classes
+        from laserorm.core.model import Model as StaticModel
+
+        assert issubclass(UserModel, StaticModel)
+        assert not issubclass(UserModel, BaseSchema)
+        assert not issubclass(UserModel, UserSchema)
+
+        # Test instance creation
+        user = UserModel(name="Frank", email="frank@example.com", age=30)
+
+        assert user.name == "Frank"
+        assert user.email == "frank@example.com"
+        assert user.age == 30
+        assert isinstance(user.created_at, datetime)
+
+    def test_to_model_model_methods_work(self):
+        """Test that converted model has all the expected Model methods"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+            age: int = 25
+
+        UserModel = UserSchema.to_model()
+
+        # Test that Model methods are available
+        assert hasattr(UserModel, "get_schema")
+        assert hasattr(UserModel, "get_fields")
+
+        # Test get_schema method
+        schema = UserModel.get_schema()
+        assert "name" in schema
+        assert "email" in schema
+        assert "age" in schema
+
+        # Test get_fields method on instance
+        user = UserModel(name="Grace", email="grace@example.com")
+        fields = user.get_fields()
+        assert "name" in fields
+        assert "email" in fields
+        assert "age" in fields
+
+    def test_to_model_custom_exclude(self):
+        """Test conversion respects custom exclude lists"""
+
+        @dataclass
+        class UserSchema(Model):
+            exclude = ["password", "secret_key"]
+            name: str
+            email: str
+            password: str
+            secret_key: str
+
+        UserModel = UserSchema.to_model()
+
+        # Test that excluded fields are not in annotations
+        annotations = UserModel.__annotations__
+        assert "name" in annotations
+        assert "email" in annotations
+        assert "password" not in annotations
+        assert "secret_key" not in annotations
+
+        # Test instance creation (should only require non-excluded fields)
+        user = UserModel(name="Henry", email="henry@example.com")
+        assert user.name == "Henry"
+        assert user.email == "henry@example.com"
+
+    def test_to_model_preserves_module_info(self):
+        """Test that converted model preserves module information"""
+
+        @dataclass
+        class UserSchema(Model):
+            name: str
+            email: str
+
+        UserModel = UserSchema.to_model()
+
+        # Test that module is preserved
+        assert UserModel.__module__ == UserSchema.__module__
+        assert UserModel.__name__ == "UserSchema"

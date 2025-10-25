@@ -1,8 +1,21 @@
-from abc import ABC
 from dataclasses import dataclass, asdict, fields, MISSING, field
-from typing import get_origin, get_args, Union, Optional, Any, ClassVar, TypedDict, Type
+from typing import (
+    get_origin,
+    get_args,
+    Union,
+    Optional,
+    Any,
+    ClassVar,
+    TypedDict,
+    Type,
+    TYPE_CHECKING,
+    cast,
+)
 from types import UnionType
 import datetime
+from .model import Model as StaticModel
+from functools import reduce
+import builtins
 
 
 class MissingDefault:
@@ -31,7 +44,7 @@ def create_field(
 
 
 @dataclass
-class Model(ABC):
+class Model:
     # making both exclude class var to ignore during data representation(fields() ignore classvar)
     # including id in exclude to provide it in the schema and not get transfered in the get_value
     # init=False => cant init a value as it is auto
@@ -148,44 +161,67 @@ class Model(ABC):
         return schema
 
     @classmethod
-    def to_model(cls, model_name: str = None) -> Type["Model"]:
-        """
-        Convert a dataclass-based schema to a Model class.
-
-        Args:
-            model_name: Optional name for the generated model class.
-                       If not provided, uses the schema class name.
-
-        Returns:
-            A dynamically generated Model class with the same fields and annotations
-        """
-        # to avoid circular imports
-        from .model import Model as BaseModel, Column
-
-        if model_name is None:
-            model_name = cls.__name__
-
+    def to_model(cls) -> Type[StaticModel]:
+        schema = cls.get_schema()
         annotations = {}
+        defaults = {}
 
-        for field_obj in fields(cls):
-            field_name = field_obj.name
-            field_type = field_obj.type
-
-            # Skip excluded fields to avoid conflicts with Model's built-in fields
+        for field_name, field_schema in schema.items():
             if field_name in cls.exclude:
                 continue
+            field_type = field_schema.get("type")
+
+            if isinstance(field_type, list):
+                field_type = reduce(
+                    lambda a, b: getattr(builtins, a, Any) | getattr(builtins, b, Any),
+                    field_type,
+                )
+                # try:
+                #     field_type = reduce(
+                #         lambda a, b: getattr(builtins, a, Any)
+                #         | getattr(builtins, b, Any),
+                #         field_type,
+                #     )
+                # except:
+                #     # Fallback to Union if reduce fails
+                #     from typing import Union
+
+                #     field_type = Union[
+                #         tuple(getattr(builtins, t, Any) for t in field_type)
+                #     ]
+
+            elif field_schema.get("sub_type"):
+                if field_schema["sub_type"] == "list":
+                    field_type = list
+                elif field_schema["sub_type"] == "dict":
+                    field_type = dict
+                else:
+                    field_type = field_schema["sub_type"]
+
+            elif isinstance(field_type, str):
+                field_type = getattr(builtins, field_type, Any)
+
+            else:
+                field_type = Any
 
             annotations[field_name] = field_type
 
-        # Create a new class that inherits from BaseModel
-        class GeneratedModel(BaseModel):
-            # Set class attributes before metaclass processing
-            exclude = ["id"]  # Default exclude list
-            schema_exclude = []  # Default schema exclude list
-            __annotations__ = annotations
+            # Get default value from schema
+            default_value = field_schema.get("default")
+            if isinstance(default_value, MissingDefault):
+                defaults[field_name] = None
+            elif isinstance(default_value, CurrentTimeStamp):
+                defaults[field_name] = datetime.datetime.now()
+            else:
+                defaults[field_name] = default_value
 
-        # Set the class name and module
-        GeneratedModel.__name__ = model_name
-        GeneratedModel.__module__ = cls.__module__
-
-        return GeneratedModel
+        # Create the new model class dynamically
+        model_dict = {
+            "__annotations__": annotations,
+            "__module__": cls.__module__,
+            "exclude": getattr(cls, "exclude", ["id"]),
+            "schema_exclude": getattr(cls, "schema_exclude", []),
+        }
+        model_dict.update(defaults)
+        new_model_class = type(cls.__name__, (StaticModel,), model_dict)
+        return cast(Type[StaticModel], new_model_class)
