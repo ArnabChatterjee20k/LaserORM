@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager, AbstractAsyncContextManager
 from typing import TypeVar, TypedDict, AsyncGenerator, Any, Union, Type, Optional, List
-from ..model import Model
+from ..core.schema import Model
 
 
 class Index(TypedDict):

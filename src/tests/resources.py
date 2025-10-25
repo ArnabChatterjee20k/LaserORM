@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict
-from laserorm.model import Model
+from laserorm.core.schema import Model
 
 
 # example model

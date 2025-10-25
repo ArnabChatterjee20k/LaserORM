@@ -5,7 +5,7 @@ All storage implementations should inherit from this class to ensure consistent 
 
 import pytest
 from abc import ABC, abstractmethod
-from laserorm.model import Model
+from laserorm.core.schema import Model
 from ..resources import Account
 
 

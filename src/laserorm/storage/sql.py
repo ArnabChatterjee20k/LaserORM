@@ -1,7 +1,7 @@
 from abc import abstractmethod
 import json
 from .storage import StorageSession
-from ..model import Model, MissingDefault, CurrentTimeStamp
+from ..core.schema import Model, MissingDefault, CurrentTimeStamp
 from datetime import datetime
 from .storage import Index
 from typing import Any

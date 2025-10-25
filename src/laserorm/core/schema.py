@@ -1,7 +1,6 @@
 from abc import ABC
 from dataclasses import dataclass, asdict, fields, MISSING, field
-from typing import ClassVar
-from typing import get_origin, get_args, Union, Optional, Any
+from typing import get_origin, get_args, Union, Optional, Any, ClassVar, TypedDict
 from types import UnionType
 import datetime
 
@@ -14,22 +13,19 @@ class CurrentTimeStamp:
     pass
 
 
-@dataclass
-class Expression:
-    val: Any
+class FieldMetadataOptions(TypedDict):
+    index: Optional[bool] = False
+    primary_key: Optional[bool] = False
+    unique: Optional[bool] = False
+    auto_increment: Optional[bool] = False
 
-    def __eq__(self, value):
-        return "new"
+
+def create_field(metadata: FieldMetadataOptions, **fieldOptions):
+    return field(metadata=metadata, **fieldOptions)
 
 
-# TODO: have a validator param : validate=True -> when objects are created if not following the schema just throws an error
 @dataclass
 class Model(ABC):
-    def __new__(cls, *args, **kwargs):
-        for k, v in kwargs.items():
-            setattr(cls, k, Expression(v))
-        return super().__new__(cls)
-
     # making both exclude class var to ignore during data representation(fields() ignore classvar)
     # including id in exclude to provide it in the schema and not get transfered in the get_value
     # init=False => cant init a value as it is auto

@@ -1,7 +1,7 @@
 from .sql import SQLSession, StorageSession
 from contextlib import asynccontextmanager
 from .storage import Storage
-from ..model import Model
+from ..core.schema import Model
 import asyncpg
 from asyncpg.transaction import Transaction
 import json
