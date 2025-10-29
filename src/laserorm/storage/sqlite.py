@@ -1,14 +1,14 @@
 from .sql import SQLSession, StorageSession
 from contextlib import asynccontextmanager
 from .storage import Storage
-from ..core.schema import Model
+from ..core.schema import Schema
 import aiosqlite
 from datetime import datetime
 from typing import TypeVar, Type, Union
 from .storage import Index
 from psycopg2 import sql
 
-T = TypeVar("T", bound=Model)
+T = TypeVar("T", bound=Schema)
 
 
 class SQLiteSession(SQLSession):
@@ -170,7 +170,7 @@ class SQLiteSession(SQLSession):
         except Exception as e:
             raise self.process_exception(e)
 
-    async def update(self, model: Model, filters: dict, updates: dict):
+    async def update(self, model: Schema, filters: dict, updates: dict):
         """Update a row based on model.id using get_schema() order"""
         if not filters:
             raise ValueError("filters are empty")

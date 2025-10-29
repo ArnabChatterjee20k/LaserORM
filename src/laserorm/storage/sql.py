@@ -1,14 +1,14 @@
 from abc import abstractmethod
 import json
 from .storage import StorageSession
-from ..core.schema import Model, MissingDefault, CurrentTimeStamp
+from ..core.schema import Schema, MissingDefault, CurrentTimeStamp
 from datetime import datetime
 from .storage import Index
 from typing import Any
 
 
 class SQLSession(StorageSession):
-    async def init_schema(self, model: Model) -> str:
+    async def init_schema(self, model: Schema) -> str:
         table_name = model.__name__.lower()
         schema = model.get_schema()
         columns_sql = []
@@ -81,7 +81,7 @@ class SQLSession(StorageSession):
         await self.init_index(table_name, indexes)
         return create_table_sql
 
-    async def create(self, model: Model) -> Model:
+    async def create(self, model: Schema) -> Schema:
         try:
             table_name = type(model).__name__.lower()
             model_values = self.encode(model.get_schema(), model.get_values())
@@ -94,8 +94,7 @@ class SQLSession(StorageSession):
             model.id = row_id
             return model
         except Exception as e:
-            print(e)
-            # raise self.process_exception(e)
+            raise self.process_exception(e)
 
     @abstractmethod
     def python_to_sqltype(self, py_type: str) -> str:

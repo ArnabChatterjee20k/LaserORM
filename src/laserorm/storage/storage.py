@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager, AbstractAsyncContextManager
 from typing import TypeVar, TypedDict, AsyncGenerator, Any, Union, Type, Optional, List
-from ..core.schema import Model
+from ..core.schema import Schema
+from ..core.model import Model
 
 
 class Index(TypedDict):
@@ -9,7 +10,7 @@ class Index(TypedDict):
     type: str
 
 
-T = TypeVar("T", bound=Model)
+T = TypeVar("T", bound=Schema)
 
 
 class StorageSession(ABC):
@@ -60,7 +61,7 @@ class StorageSession(ABC):
     @abstractmethod
     async def close(self): ...
     @abstractmethod
-    async def init_schema(self, schema: Model): ...
+    async def init_schema(self, schema: Schema): ...
     @abstractmethod
     async def init_index(self, table: str, indexes: List[Index]): ...
 
@@ -92,12 +93,14 @@ class Storage(ABC):
             finally:
                 await session.close()
 
-    def get_model_class(model: object) -> Type[Model]:
-        # Model instance (Model()) is provided
-        if isinstance(model, Model):
+    def get_model_class(model: object) -> Type[Schema]:
+        # Model instance (Schema()) is provided
+        if isinstance(model, Schema) or isinstance(model, Model):
             return model.__class__
         # Model class is given
-        elif isinstance(model, type) and issubclass(model, Model):
+        elif (isinstance(model, type) and issubclass(model, Schema)) or (
+            isinstance(model, type) and issubclass(model, Model)
+        ):
             return model
 
         raise TypeError("Invalid model type")

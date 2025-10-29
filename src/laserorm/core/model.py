@@ -2,6 +2,7 @@ from typing import get_type_hints, Any, Optional, Union, get_origin, get_args
 from types import UnionType
 from dataclasses import dataclass
 import datetime
+import inspect
 
 
 @dataclass
@@ -76,11 +77,12 @@ class Expression:
     Example: Account.id -> <Expression attribute='id'>
     """
 
-    __slots__ = ("_key", "_value")
+    __slots__ = ("_key", "_value", "_metadata")
 
-    def __init__(self, key: str, value: Any):
+    def __init__(self, key: str, value: Any, metadata: dict = {}):
         self._key = key
         self._value = value
+        self._metadata = metadata
 
     @property
     def key(self):
@@ -91,6 +93,11 @@ class Expression:
     def value(self):
         """Read-only access to the expression value"""
         return self._value
+
+    @property
+    def metadata(self):
+        """Read-only access to the expression metadata"""
+        return self._metadata
 
     def __eq__(self, other):
         return EqualExpression(self.key, other)
@@ -111,7 +118,7 @@ class Expression:
         return GreaterThanOrEqualExpression(self.key, other)
 
     def __repr__(self):
-        return f"<Expr {self.key}>"
+        return f"<Expr key={self.key} value={self.value}>"
 
 
 # -------------------------------------------------------------------
@@ -125,11 +132,12 @@ class Column:
       - On the instance level -> behaves like a normal attribute
     """
 
-    def __init__(self, key=None, value=None, type_hint=None):
+    def __init__(self, key=None, value=None, type_hint=None, metadata={}):
         self.key = key
         self.value = value
         self.name = None  # will be set via __set_name__
         self.type_hint = type_hint  # used for runtime validation (future use)
+        self.metadata = metadata
 
     def __set_name__(self, owner, name):
         """Automatically called when assigned to a class attribute"""
@@ -140,7 +148,7 @@ class Column:
     def __get__(self, instance, owner):
         """Class-level access returns an Expression, instance-level gets stored value"""
         if instance is None:
-            return Expression(self.key, self.value)
+            return Expression(self.key, self.value, self.metadata)
         return instance.__dict__.get(self.name, None)
 
     def __set__(self, instance, value):
@@ -177,7 +185,7 @@ class Meta(type):
 class Model(metaclass=Meta):
     """
     Base class providing:
-      - Automatic Column wrapping for annotated fields
+      - Automatic Column wrapping for annotated fieldas
       - Inheritance-aware column collection (MRO)
       - Optional validation flag via __init_subclass__
     """
@@ -185,6 +193,12 @@ class Model(metaclass=Meta):
     # including exclude, schema_exclude in them so that they are not included in the schema
     exclude: list[str] = ["id", "exclude", "schema_exclude"]
     schema_exclude: list[str] = ["exclude", "schema_exclude"]
+    id: Optional[int] = Column(
+        "id",
+        None,
+        int,
+        metadata={"primary_key": True, "index": True, "auto_increment": True},
+    )
 
     def __init_subclass__(cls, **kwargs):
         # Consume known subclass configuration (e.g. validation=True)
@@ -195,11 +209,15 @@ class Model(metaclass=Meta):
         # get_type_hints is recursive
         annotations = get_type_hints(cls)
         for key, type_hint in annotations.items():
-            # using get on dict instead of getattr as getattr will call get of the Column and it will return Expression
-            # dict will bypass the descriptor protocol
-            if isinstance(cls.__dict__.get(key, None), Column):
+            # using inspect to espace __get__ of Column as it returns an Expression
+            # and also ensuring if the key is defined again
+            if any(
+                isinstance(inspect.getattr_static(base, key, None), Column)
+                for base in cls.__mro__
+            ):
                 continue
-            default = cls.__dict__.get(key, None)
+            # using getattr to easily lookup the inheritence and mro chain while __dict__ doesn't look at the
+            default = getattr(cls, key, None)
             setattr(cls, key, Column(key, default, type_hint))
 
     def __init__(self, **kwargs):
@@ -264,10 +282,7 @@ class Model(metaclass=Meta):
         insert_data = {}
         annotations = get_type_hints(self.__class__)
 
-        exclude_list = getattr(self.__class__, "exclude", [])
-        if not isinstance(exclude_list, list):
-            exclude_list = []
-
+        exclude_list = self._get_exclude()
         for field_name in self.get_fields():
             if field_name in exclude_list:
                 continue
@@ -285,9 +300,11 @@ class Model(metaclass=Meta):
                         ]
                         if "NoneType" in types:
                             insert_data[field_name] = value
+            elif callable(value):
+                # for default values like dict,list,lambda
+                insert_data[field_name] = value()
             else:
                 insert_data[field_name] = value
-
         return insert_data
 
     @classmethod
@@ -296,27 +313,20 @@ class Model(metaclass=Meta):
         schema = {}
         annotations = get_type_hints(cls)
 
-        schema_exclude_list = getattr(cls, "schema_exclude").value
-
+        schema_exclude_list = cls._get_schema_exclude()
         for field_name in annotations:
             if field_name in exclude or field_name in schema_exclude_list:
                 continue
 
             field_type = annotations[field_name]
-            origin = get_origin(field_type)
+            # get_origin(field_type) can return None for non-parameterized type hints. Ex- list, dict. And it work ok for list[str], Optional[int]
+            origin = get_origin(field_type) or field_type
 
-            # Get metadata from Column if it exists
             column = getattr(cls, field_name, None)
             metadata = {}
-            if isinstance(column, Column):
-                # For now, we'll use basic metadata structure
-                # This could be extended to support more metadata options
-                metadata = {
-                    "primary_key": False,
-                    "index": False,
-                    "unique": False,
-                    "auto_increment": False,
-                }
+            # doing getattr will call the get of the Column instance and will return the Expression class
+            if isinstance(column, Expression):
+                metadata = column.metadata
 
             default = None
             if isinstance(column, Column) and column.value is not None:
@@ -326,7 +336,6 @@ class Model(metaclass=Meta):
                     default = "CURRENT_TIMESTAMP"
                 else:
                     default = column.value
-
             schema[field_name] = {
                 "type": None,
                 "sub_type": None,
@@ -362,3 +371,14 @@ class Model(metaclass=Meta):
                 ]
 
         return schema
+
+    # Unlike dataclasses, classvars aren't ignored in the normal vars. So doing it manually
+    @classmethod
+    def _get_schema_exclude(cls):
+        "for getting class keys which are excluded during insertion into storage. Mainly for get_values"
+        return [*cls.schema_exclude.value, "exclude", "schema_exclude"]
+
+    @classmethod
+    def _get_exclude(cls):
+        "for getting class keys which are excluded during creation of storage schema. Mainly for get_schema"
+        return [*cls.exclude.value, "exclude", "schema_exclude"]

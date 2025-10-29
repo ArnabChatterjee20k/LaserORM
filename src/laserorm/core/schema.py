@@ -44,7 +44,7 @@ def create_field(
 
 
 @dataclass
-class Model:
+class Schema:
     # making both exclude class var to ignore during data representation(fields() ignore classvar)
     # including id in exclude to provide it in the schema and not get transfered in the get_value
     # init=False => cant init a value as it is auto
@@ -101,10 +101,15 @@ class Model:
 
     @classmethod
     def get_schema(cls, exclude=[]):
+        exclude = [*exclude, *cls.schema_exclude]
+        return cls._get_schema(exclude=exclude)
+
+    @classmethod
+    def _get_schema(cls, exclude=[]):
         """Generate json schema; default values are ignored and only default_factory are considered"""
         schema = {}
         for field in fields(cls):
-            if field.name in exclude or field.name in cls.schema_exclude:
+            if field.name in exclude:
                 continue
             field_type = field.type
             field_name = field.name
@@ -162,50 +167,36 @@ class Model:
 
     @classmethod
     def to_model(cls) -> Type[StaticModel]:
-        schema = cls.get_schema()
+        # helper method to get resolved type from the builtin dynamically (not using lambda as we need to resolve some unknown types of builtin like NoneType)
+        def _resolve_builtin_type(name: str):
+            if name == "NoneType":
+                return type(None)
+            return getattr(builtins, name, Any)
+
+        # including every fields of the class and not ignoring schema_exclude fields
+        schema = cls._get_schema()
         annotations = {}
         defaults = {}
 
         for field_name, field_schema in schema.items():
-            if field_name in cls.exclude:
-                continue
             field_type = field_schema.get("type")
+
+            # needs to be a column which will be automatically handled by the StaticModel class
+            if field_name == "id":
+                continue
 
             if isinstance(field_type, list):
                 field_type = reduce(
-                    lambda a, b: getattr(builtins, a, Any) | getattr(builtins, b, Any),
+                    lambda a, b: _resolve_builtin_type(a) | _resolve_builtin_type(b),
                     field_type,
                 )
-                # try:
-                #     field_type = reduce(
-                #         lambda a, b: getattr(builtins, a, Any)
-                #         | getattr(builtins, b, Any),
-                #         field_type,
-                #     )
-                # except:
-                #     # Fallback to Union if reduce fails
-                #     from typing import Union
-
-                #     field_type = Union[
-                #         tuple(getattr(builtins, t, Any) for t in field_type)
-                #     ]
-
-            elif field_schema.get("sub_type"):
-                if field_schema["sub_type"] == "list":
-                    field_type = list
-                elif field_schema["sub_type"] == "dict":
-                    field_type = dict
+            if field_type == "json":
+                if field_schema.get("sub_type"):
+                    annotations[field_name] = field_schema.get("sub_type")
                 else:
-                    field_type = field_schema["sub_type"]
-
-            elif isinstance(field_type, str):
-                field_type = getattr(builtins, field_type, Any)
-
+                    annotations[field_name] = Any
             else:
-                field_type = Any
-
-            annotations[field_name] = field_type
-
+                annotations[field_name] = field_type
             # Get default value from schema
             default_value = field_schema.get("default")
             if isinstance(default_value, MissingDefault):
@@ -216,12 +207,22 @@ class Model:
                 defaults[field_name] = default_value
 
         # Create the new model class dynamically
-        model_dict = {
-            "__annotations__": annotations,
-            "__module__": cls.__module__,
-            "exclude": getattr(cls, "exclude", ["id"]),
-            "schema_exclude": getattr(cls, "schema_exclude", []),
+        # if creating class dynamically -> class attributes of a class will not be created
+        # so need to merge them
+        static_model_base_attrs = {
+            k: v
+            for k, v in vars(StaticModel).items()
+            if not (k.startswith("__") and k.endswith("__"))
         }
+        model_dict = {"__annotations__": annotations, "__module__": cls.__module__}
+
+        model_dict.update(static_model_base_attrs)
+        # default values of the attributes of the current class
         model_dict.update(defaults)
+
+        # externally_providing the exclude and schema_exclude and not depending on the StaticModel as it needs current model exclusion
+        model_dict["exclude"] = getattr(cls, "exclude", ["id"])
+        model_dict["schema_exclude"] = getattr(cls, "schema_exclude")
+
         new_model_class = type(cls.__name__, (StaticModel,), model_dict)
         return cast(Type[StaticModel], new_model_class)

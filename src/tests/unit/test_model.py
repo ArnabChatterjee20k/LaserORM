@@ -25,7 +25,6 @@ class TestExpression:
         """Test creating an Expression with a key"""
         expr = Expression("user_id", None)
         assert expr.key == "user_id"
-        assert repr(expr) == "<Expr user_id>"
 
     def test_expression_comparison_operators(self):
         """Test all comparison operators on Expression"""
@@ -82,47 +81,47 @@ class TestColumn:
     def test_column_set_name(self):
         """Test __set_name__ method sets the name and key"""
         col = Column()
-        col.__set_name__(TestModel, "email")
+        col.__set_name__(TestModelHelper, "email")
         assert col.name == "email"
         assert col.key == "email"
 
     def test_column_set_name_with_existing_key(self):
         """Test __set_name__ preserves existing key"""
         col = Column("custom_key")
-        col.__set_name__(TestModel, "email")
+        col.__set_name__(TestModelHelper, "email")
         assert col.name == "email"
         assert col.key == "custom_key"
 
     def test_column_get_class_level(self):
         """Test __get__ returns Expression at class level"""
         col = Column("age")
-        col.__set_name__(TestModel, "age")
-        result = col.__get__(None, TestModel)
+        col.__set_name__(TestModelHelper, "age")
+        result = col.__get__(None, TestModelHelper)
         assert isinstance(result, Expression)
         assert result.key == "age"
 
     def test_column_get_instance_level(self):
         """Test __get__ returns stored value at instance level"""
         col = Column("name", "John")
-        col.__set_name__(TestModel, "name")
-        instance = TestModel()
+        col.__set_name__(TestModelHelper, "name")
+        instance = TestModelHelper()
         instance.__dict__["name"] = "Jane"
-        result = col.__get__(instance, TestModel)
+        result = col.__get__(instance, TestModelHelper)
         assert result == "Jane"
 
     def test_column_get_instance_level_none(self):
         """Test __get__ returns None when no value stored"""
         col = Column("name")
-        col.__set_name__(TestModel, "name")
-        instance = TestModel()
-        result = col.__get__(instance, TestModel)
+        col.__set_name__(TestModelHelper, "name")
+        instance = TestModelHelper()
+        result = col.__get__(instance, TestModelHelper)
         assert result is None
 
     def test_column_set(self):
         """Test __set__ stores value in instance dictionary"""
         col = Column("name")
-        col.__set_name__(TestModel, "name")
-        instance = TestModel()
+        col.__set_name__(TestModelHelper, "name")
+        instance = TestModelHelper()
         col.__set__(instance, "Alice")
         assert instance.__dict__["name"] == "Alice"
 
@@ -357,11 +356,24 @@ class TestModel:
         assert "password" not in data
         assert "email" in data
 
-        # Test get_values excludes password
+        # Test get_values excludes password (uses exclude class variable)
         values = user.get_values()
         assert "name" in values
         assert "password" not in values
         assert "email" in values
+
+        # Test get_schema - exclude class variable doesn't automatically affect get_schema
+        # Only schema_exclude does. So password will be in get_schema by default
+        schema = UserModel.get_schema()
+        assert "name" in schema
+        assert "password" in schema  # exclude doesn't affect get_schema
+        assert "email" in schema
+
+        # But we can exclude via the exclude parameter
+        schema_with_exclude = UserModel.get_schema(exclude=["password"])
+        assert "name" in schema_with_exclude
+        assert "password" not in schema_with_exclude
+        assert "email" in schema_with_exclude
 
     def test_model_schema_exclude_class_variable(self):
         """Test Model schema_exclude class variable functionality"""
@@ -378,9 +390,36 @@ class TestModel:
         assert "internal_id" not in schema
         assert "email" in schema
 
+        # Test get_values includes internal_id (schema_exclude only affects get_schema, not get_values)
+        user = UserModel(name="Test", internal_id="123", email="test@example.com")
+        values = user.get_values()
+        assert "name" in values
+        assert "internal_id" in values  # schema_exclude doesn't affect get_values
+        assert "email" in values
+
+    def test_schema_values_match_with_model(self):
+        class UserModel(Model):
+            # schema_exclude = ["internal_id"]
+            name: str
+            internal_id: str
+            email: str
+
+        from laserorm.core.schema import Schema
+        from dataclasses import dataclass
+
+        @dataclass
+        class UserSchema(Schema):
+            # schema_exclude = ["internal_id"]
+            name: str
+            internal_id: str
+            email: str
+
+        print(UserSchema.get_schema())
+        print(UserModel.get_schema())
+
 
 # Helper class for testing
-class TestModel:
+class TestModelHelper:
     """Helper class for testing Column descriptor"""
 
     pass

@@ -1,12 +1,12 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict
-from laserorm.core.schema import Model
+from laserorm.core.schema import Schema
 
 
 # example model
 @dataclass
-class Account(Model):
+class Account(Schema):
 
     uid: str = field(metadata={"index": True, "unique": True})
     permissions: list[str] = field(default_factory=list)

@@ -5,8 +5,25 @@ All storage implementations should inherit from this class to ensure consistent 
 
 import pytest
 from abc import ABC, abstractmethod
-from laserorm.core.schema import Model
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Dict
+from laserorm.core.schema import Schema
+from laserorm.core.model import Model
 from ..resources import Account
+
+
+# Model version of Account for testing
+class AccountModel(Model):
+    uid: str
+    permissions: list[str]
+    password: str | None = None
+    is_active: bool = True
+    is_blocked: bool = False
+    created_at: datetime = datetime.now
+    updated_at: datetime = datetime.now
+    last_active_at: datetime | None = None
+    metadata: Dict = dict
 
 
 class BaseStorageTest(ABC):
@@ -23,8 +40,8 @@ class BaseStorageTest(ABC):
         pass
 
     @pytest.mark.asyncio
-    async def test_crud_operations(self):
-        """Test basic CRUD operations"""
+    async def test_schema_crud_operations(self):
+        """Test basic CRUD operations with Schema"""
         storage = await self.get_storage()
 
         try:
@@ -358,5 +375,102 @@ class BaseStorageTest(ABC):
 
                 remaining_accounts = await session.list(Account)
                 assert len(remaining_accounts) == 2
+        finally:
+            await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_model_crud_operations(self):
+        """Test basic CRUD operations with Model"""
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                await session.init_schema(AccountModel)
+
+                # create
+                created = await session.create(
+                    AccountModel(uid="y", permissions=["write"])
+                )
+                assert created.uid == "y"
+                assert created.id is not None
+
+                # get
+                got = await session.get(AccountModel, filters={"uid": "y"})
+                assert got and got.uid == "y"
+                assert got.permissions == ["write"]
+
+                # list
+                lst = await session.list(AccountModel, limit=10)
+                assert len(lst) >= 1
+
+                # update
+                updated = await session.update(
+                    AccountModel, {"uid": "y"}, {"permissions": ["write", "delete"]}
+                )
+                assert (
+                    updated
+                    and "write" in updated.permissions
+                    and "delete" in updated.permissions
+                )
+
+                # delete
+                deleted = await session.delete(AccountModel, {"uid": "y"})
+                assert deleted
+
+                # verify deletion
+                got_after_delete = await session.get(AccountModel, filters={"uid": "y"})
+                assert got_after_delete is None
+
+        finally:
+            await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_schema_to_model_conversion(self):
+        """Test Schema to Model conversion and CRUD operations"""
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                # Convert Schema to Model
+                AccountModelFromSchema = Account.to_model()
+                await session.init_schema(AccountModelFromSchema)
+                # create
+                created = await session.create(
+                    AccountModelFromSchema(uid="z", permissions=["admin"])
+                )
+                assert created.uid == "z"
+                assert created.id is not None
+
+                # get
+                got = await session.get(AccountModelFromSchema, filters={"uid": "z"})
+                assert got and got.uid == "z"
+                assert got.permissions == ["admin"]
+
+                # list
+                lst = await session.list(AccountModelFromSchema, limit=10)
+                assert len(lst) >= 1
+
+                # update
+                updated = await session.update(
+                    AccountModelFromSchema,
+                    {"uid": "z"},
+                    {"permissions": ["admin", "super"]},
+                )
+                assert (
+                    updated
+                    and "admin" in updated.permissions
+                    and "super" in updated.permissions
+                )
+
+                # delete
+                deleted = await session.delete(AccountModelFromSchema, {"uid": "z"})
+                assert deleted
+
+                # verify deletion
+                got_after_delete = await session.get(
+                    AccountModelFromSchema, filters={"uid": "z"}
+                )
+                assert got_after_delete is None
+
         finally:
             await self.cleanup_storage(storage)

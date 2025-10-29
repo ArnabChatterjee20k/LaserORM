@@ -1,7 +1,7 @@
 from .sql import SQLSession, StorageSession
 from contextlib import asynccontextmanager
 from .storage import Storage
-from ..core.schema import Model
+from ..core.schema import Schema
 import asyncpg
 from asyncpg.transaction import Transaction
 import json
@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import TypeVar, Type, Union, AsyncGenerator, Any
 from .storage import Index
 
-T = TypeVar("T", bound=Model)
+T = TypeVar("T", bound=Schema)
 
 # connect = creates a pool
 # in every opertion -> a new connection will be used from the pool
@@ -210,7 +210,7 @@ class PostgreSQLSession(SQLSession):
         except Exception as e:
             raise self.process_exception(e)
 
-    async def update(self, model: Model, filters: dict, updates: dict):
+    async def update(self, model: Schema, filters: dict, updates: dict):
         if not filters:
             raise ValueError("filters are empty")
         try:

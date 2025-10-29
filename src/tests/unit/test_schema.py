@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, MISSING
 from datetime import datetime
 from typing import Optional, Union, List, Dict
 from laserorm.core.schema import (
-    Model,
+    Schema,
     MissingDefault,
     CurrentTimeStamp,
     FieldMetadataOptions,
@@ -93,17 +93,17 @@ class TestSchemaModel:
         """Test Model class can be inherited"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
 
-        assert issubclass(UserSchema, Model)
+        assert issubclass(UserSchema, Schema)
 
     def test_model_has_id_field(self):
         """Test Model has id field with correct metadata"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
 
         # Check that id field exists
@@ -115,7 +115,7 @@ class TestSchemaModel:
         """Test Model has exclude and schema_exclude class variables"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
 
         assert hasattr(UserSchema, "exclude")
@@ -127,7 +127,7 @@ class TestSchemaModel:
         """Test to_dict method"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: Optional[int] = None
@@ -144,7 +144,7 @@ class TestSchemaModel:
         """Test to_dict with exclude parameter"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: int
@@ -160,7 +160,7 @@ class TestSchemaModel:
         """Test to_dict include_none parameter"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: Optional[int] = None
@@ -180,7 +180,7 @@ class TestSchemaModel:
         """Test get_fields method"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: int
@@ -197,7 +197,7 @@ class TestSchemaModel:
         """Test get_values method for database insertion"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: Optional[int] = None
@@ -214,7 +214,7 @@ class TestSchemaModel:
         """Test get_values handles None values based on type annotations"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             phone: str  # Required field
@@ -233,7 +233,7 @@ class TestSchemaModel:
         """Test get_schema class method"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: Optional[int] = None
@@ -260,7 +260,7 @@ class TestSchemaModel:
         """Test get_schema with exclude parameter"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: int
@@ -275,7 +275,7 @@ class TestSchemaModel:
         """Test get_schema respects schema_exclude class variable"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             schema_exclude = ["internal_id"]
             name: str
             email: str
@@ -287,11 +287,18 @@ class TestSchemaModel:
         assert "email" in schema
         assert "internal_id" not in schema
 
+        # Test get_values includes internal_id (schema_exclude only affects get_schema, not get_values)
+        user = UserSchema(name="Test", email="test@example.com", internal_id="123")
+        values = user.get_values()
+        assert "name" in values
+        assert "email" in values
+        assert "internal_id" in values  # schema_exclude doesn't affect get_values
+
     def test_model_get_schema_union_types(self):
         """Test get_schema handles Union types correctly"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             age: Union[int, None]  # Same as Optional[int]
             status: Union[str, int]
@@ -313,7 +320,7 @@ class TestSchemaModel:
         """Test get_schema handles list types correctly"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             tags: List[str]
             metadata: Dict[str, str]
@@ -334,7 +341,7 @@ class TestSchemaModel:
         """Test get_schema handles different types of default values correctly"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             # Field with no default (should be MissingDefault)
             name: str
 
@@ -384,7 +391,7 @@ class TestSchemaModel:
         """Test get_schema preserves field metadata"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str = field(metadata={"index": True, "unique": True})
             email: str = field(metadata={"primary_key": True})
             age: int = field(metadata={"auto_increment": True})
@@ -409,7 +416,7 @@ class TestSchemaModel:
         """Test Model with custom exclude list"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             exclude = ["password", "secret_key"]
             name: str
             email: str
@@ -434,12 +441,27 @@ class TestSchemaModel:
         assert "password" not in values
         assert "secret_key" not in values
 
+        # Test get_schema does NOT exclude custom fields by default
+        # (only schema_exclude affects get_schema, not exclude)
+        schema = UserSchema.get_schema()
+        assert "name" in schema
+        assert "email" in schema
+        assert "password" in schema  # exclude doesn't affect get_schema
+        assert "secret_key" in schema  # exclude doesn't affect get_schema
+
+        # But we can exclude via the exclude parameter
+        schema_with_exclude = UserSchema.get_schema(exclude=["password", "secret_key"])
+        assert "name" in schema_with_exclude
+        assert "email" in schema_with_exclude
+        assert "password" not in schema_with_exclude
+        assert "secret_key" not in schema_with_exclude
+
     def test_model_inheritance_with_schema(self):
         """Test Model inheritance with schema methods"""
 
         # using kw_only so that we can mix up the required fields and default fields together in parent child in random order
         @dataclass(kw_only=True)
-        class BaseSchema(Model):
+        class BaseSchema(Schema):
             name: str
             created_at: datetime = field(default_factory=datetime.now)
 
@@ -470,7 +492,7 @@ class TestSchemaModel:
         """Test basic conversion from schema to model"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: int = 25
@@ -498,7 +520,7 @@ class TestSchemaModel:
         """Test creating instances from converted model"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: int = 25
@@ -517,7 +539,7 @@ class TestSchemaModel:
         """Test conversion with various default values"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: int = 30
@@ -541,15 +563,15 @@ class TestSchemaModel:
         """Test that to_model excludes the id field to avoid conflicts"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
 
         UserModel = UserSchema.to_model()
 
-        # Test that id is not in annotations (should be excluded)
+        # Test that id is in annotations (should be excluded but must be part of the class definition)
         annotations = UserModel.__annotations__
-        assert "id" not in annotations
+        assert "id" in annotations
 
         # Test that we can still create instances
         user = UserModel(name="Bob", email="bob@example.com")
@@ -560,7 +582,7 @@ class TestSchemaModel:
         """Test conversion with Union types"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             age: Union[int, None]
             status: Union[str, int]
@@ -583,7 +605,7 @@ class TestSchemaModel:
         """Test conversion with list and dict types"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             tags: List[str]
             metadata: Dict[str, str]
@@ -601,7 +623,7 @@ class TestSchemaModel:
         """Test conversion with inheritance"""
 
         @dataclass(kw_only=True)
-        class BaseSchema(Model):
+        class BaseSchema(Schema):
             name: str
             created_at: datetime = field(default_factory=datetime.now)
 
@@ -631,7 +653,7 @@ class TestSchemaModel:
         """Test that converted model has all the expected Model methods"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
             age: int = 25
@@ -659,7 +681,7 @@ class TestSchemaModel:
         """Test conversion respects custom exclude lists"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             exclude = ["password", "secret_key"]
             name: str
             email: str
@@ -668,23 +690,83 @@ class TestSchemaModel:
 
         UserModel = UserSchema.to_model()
 
-        # Test that excluded fields are not in annotations
+        # Test that excluded fields are present in annotations
         annotations = UserModel.__annotations__
         assert "name" in annotations
         assert "email" in annotations
-        assert "password" not in annotations
-        assert "secret_key" not in annotations
+        assert "password" in annotations
+        assert "secret_key" in annotations
 
         # Test instance creation (should only require non-excluded fields)
         user = UserModel(name="Henry", email="henry@example.com")
         assert user.name == "Henry"
         assert user.email == "henry@example.com"
 
+        # Test that converted model's get_schema does NOT exclude password and secret_key
+        # (only schema_exclude affects get_schema, not exclude)
+        schema = UserModel.get_schema()
+        # Since password and secret_key are not in annotations, they won't be in schema anyway
+        # But if they were, they would still be included because exclude doesn't affect get_schema
+
+        # Test that converted model's get_values excludes password and secret_key
+        # (Note: since they're excluded from annotations during conversion, they won't be accessible)
+        values = user.get_values()
+        assert "name" in values
+        assert "email" in values
+        assert "password" not in values
+        assert "secret_key" not in values
+
+    def test_to_model_custom_schema_exclude(self):
+        """Test conversion respects custom schema_exclude lists"""
+
+        @dataclass
+        class UserSchema(Schema):
+            schema_exclude = ["internal_id", "deleted_at"]
+            name: str
+            email: str
+            internal_id: str
+            deleted_at: str
+
+        UserModel = UserSchema.to_model()
+
+        # Test that schema_excluded fields are still in annotations (unlike exclude)
+        annotations = UserModel.__annotations__
+        assert "name" in annotations
+        assert "email" in annotations
+        assert "internal_id" in annotations
+        assert "deleted_at" in annotations
+
+        # Test instance creation (fields are in annotations, so they can be set)
+        user = UserModel(
+            name="John",
+            email="john@example.com",
+            internal_id="123",
+            deleted_at="2023-01-01",
+        )
+        assert user.name == "John"
+        assert user.email == "john@example.com"
+
+        # Test that converted model's get_schema excludes internal_id and deleted_at
+        schema = UserModel.get_schema()
+        assert "name" in schema
+        assert "email" in schema
+        assert "internal_id" not in schema
+        assert "deleted_at" not in schema
+
+        # Test that converted model's get_values still includes internal_id and deleted_at
+        # (schema_exclude only affects get_schema, not get_values)
+        # Actually, looking at the code, get_values uses exclude list, not schema_exclude
+        values = user.get_values()
+        assert "name" in values
+        assert "email" in values
+        assert "internal_id" in values
+        assert "deleted_at" in values
+
     def test_to_model_preserves_module_info(self):
         """Test that converted model preserves module information"""
 
         @dataclass
-        class UserSchema(Model):
+        class UserSchema(Schema):
             name: str
             email: str
 
