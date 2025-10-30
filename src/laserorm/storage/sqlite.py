@@ -4,9 +4,21 @@ from .storage import Storage
 from ..core.schema import Schema
 import aiosqlite
 from datetime import datetime
-from typing import TypeVar, Type, Union
+from typing import TypeVar, Type, Union, Any, get_origin, get_args
 from .storage import Index
-from psycopg2 import sql
+from ..core.expressions import (
+    BaseExpression,
+    AndExpression,
+    OrExpression,
+    EqualExpression,
+    NotEqualExpression,
+    LessThanExpression,
+    LessThanOrEqualExpression,
+    GreaterThanExpression,
+    GreaterThanOrEqualExpression,
+    InExpression,
+    NotInExpression,
+)
 
 T = TypeVar("T", bound=Schema)
 
@@ -72,7 +84,7 @@ class SQLiteSession(SQLSession):
         self,
         model: Union[T, Type[T]],
         for_update=False,
-        filters: dict = None,
+        filters: dict | BaseExpression = None,
         contains: dict = None,
     ) -> T:
         if not filters:
@@ -81,8 +93,13 @@ class SQLiteSession(SQLSession):
             table = Storage.get_model_class(model)
 
             table_name = table.__name__.lower()
-            where = " AND ".join([f"{attribute}=?" for attribute in filters])
-            values = [value for value in filters.values()]
+            if issubclass(type(filters), BaseExpression):
+                # print(self.compile_expression(filters))
+                where, values = self.compile_expression(filters)
+            else:
+                where = " AND ".join([f"{attribute}=?" for attribute in filters])
+                values = [value for value in filters.values()]
+
             select = f"SELECT * FROM {table_name} where {where} LIMIT 1"
             async with self.connection.execute(select, values) as cursor:
                 row = await cursor.fetchone()
@@ -128,15 +145,20 @@ class SQLiteSession(SQLSession):
             values = []
 
             if filters:
-                where_clauses = [f"{attribute}=?" for attribute in filters]
-                values.extend(filters.values())
+                if issubclass(type(filters), BaseExpression):
+                    where, compiled_values = self.compile_expression(filters)
+                    values.extend(compiled_values)
+                    where = f"WHERE {where}"
+                else:
+                    where_clauses = [f"{attribute}=?" for attribute in filters]
+                    values.extend(filters.values())
 
-                if after_id is not None:
-                    where_clauses.append("id > ?")
-                    values.append(after_id)
+                    if after_id is not None:
+                        where_clauses.append("id > ?")
+                        values.append(after_id)
 
-                where = " AND ".join(where_clauses)
-                where = f"WHERE {where}"
+                    where = " AND ".join(where_clauses)
+                    where = f"WHERE {where}"
             elif after_id is not None:
                 where = "WHERE id > ?"
                 values.append(after_id)
@@ -170,7 +192,9 @@ class SQLiteSession(SQLSession):
         except Exception as e:
             raise self.process_exception(e)
 
-    async def update(self, model: Schema, filters: dict, updates: dict):
+    async def update(
+        self, model: Schema, filters: dict | BaseExpression, updates: dict
+    ):
         """Update a row based on model.id using get_schema() order"""
         if not filters:
             raise ValueError("filters are empty")
@@ -187,8 +211,11 @@ class SQLiteSession(SQLSession):
             set_clause = ", ".join([f"{attr}=?" for attr in updates])
             set_values = list(updates.values())
 
-            where_clause = " AND ".join([f"{attr}=?" for attr in filters])
-            where_values = list(filters.values())
+            if issubclass(type(filters), BaseExpression):
+                where_clause, where_values = self.compile_expression(filters)
+            else:
+                where_clause = " AND ".join([f"{attr}=?" for attr in filters])
+                where_values = list(filters.values())
 
             sql = (
                 f"UPDATE {table_name} SET {set_clause} WHERE {where_clause} RETURNING *"
@@ -207,14 +234,17 @@ class SQLiteSession(SQLSession):
         except Exception as e:
             raise self.process_exception(e)
 
-    async def delete(self, model: Union[T, Type[T]], filters: dict):
+    async def delete(self, model: Union[T, Type[T]], filters: dict | BaseExpression):
         """Delete a row based on model id"""
         try:
             table = Storage.get_model_class(model)
             table_name = table.__name__.lower()
 
-            where_clause = " AND ".join([f"{attr}=?" for attr in filters])
-            where_values = list(filters.values())
+            if issubclass(type(filters), BaseExpression):
+                where_clause, where_values = self.compile_expression(filters)
+            else:
+                where_clause = " AND ".join([f"{attr}=?" for attr in filters])
+                where_values = list(filters.values())
 
             sql = f"DELETE FROM {table_name} WHERE {where_clause}"
 
@@ -227,7 +257,7 @@ class SQLiteSession(SQLSession):
     async def bulk_delete(
         self,
         model: Union[T, Type[T]],
-        filters: dict = None,
+        filters: dict | BaseExpression = None,
         contains: dict = None,
     ) -> int:
         """Delete multiple rows based on filters and contains conditions"""
@@ -240,9 +270,14 @@ class SQLiteSession(SQLSession):
 
             # Add filter conditions
             if filters:
-                filter_clauses = [f"{attr}=?" for attr in filters]
-                where_clauses.extend(filter_clauses)
-                values.extend(filters.values())
+                if issubclass(type(filters), BaseExpression):
+                    where_sql, compiled_values = self.compile_expression(filters)
+                    where_clauses.append(where_sql)
+                    values.extend(compiled_values)
+                else:
+                    filter_clauses = [f"{attr}=?" for attr in filters]
+                    where_clauses.extend(filter_clauses)
+                    values.extend(filters.values())
 
             # Add contains conditions (for JSON fields)
             if contains:
@@ -284,7 +319,8 @@ class SQLiteSession(SQLSession):
     async def close(self):
         await self.connection.close()
 
-    def get_placeholder(self, count: int):
+    @classmethod
+    def get_placeholder(cls, count: int):
         return ",".join("?" for _ in range(count))
 
     def get_datetime_format(self):

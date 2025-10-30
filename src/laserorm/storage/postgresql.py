@@ -8,6 +8,19 @@ import json
 from datetime import datetime
 from typing import TypeVar, Type, Union, AsyncGenerator, Any
 from .storage import Index
+from ..core.expressions import (
+    BaseExpression,
+    AndExpression,
+    OrExpression,
+    EqualExpression,
+    NotEqualExpression,
+    LessThanExpression,
+    LessThanOrEqualExpression,
+    GreaterThanExpression,
+    GreaterThanOrEqualExpression,
+    InExpression,
+    NotInExpression,
+)
 
 T = TypeVar("T", bound=Schema)
 
@@ -96,7 +109,7 @@ class PostgreSQLSession(SQLSession):
         self,
         model: Union[T, Type[T]],
         for_update: bool = False,
-        filters: dict = None,
+        filters: dict | BaseExpression = None,
         contains: dict = None,
     ) -> T:
         if not filters:
@@ -109,10 +122,14 @@ class PostgreSQLSession(SQLSession):
             where_clauses = []
             values = []
 
-            # Filters
-            for idx, (key, value) in enumerate(filters.items(), start=1):
-                where_clauses.append(f"{key} = ${idx}")
-                values.append(value)
+            if issubclass(type(filters), BaseExpression):
+                where_sql, where_vals = self.compile_expression(filters)
+                where_clauses.append(where_sql)
+                values.extend(where_vals)
+            else:
+                for idx, (key, value) in enumerate(filters.items(), start=1):
+                    where_clauses.append(f"{key} = ${idx}")
+                    values.append(value)
 
             # Contains filters
             if contains:
@@ -152,7 +169,7 @@ class PostgreSQLSession(SQLSession):
         model: Union[T, Type[T]],
         limit: int = 25,
         after_id: int | None = None,
-        filters: dict | None = None,
+        filters: dict | BaseExpression | None = None,
         contains: dict | None = None,
     ):
         try:
@@ -163,10 +180,15 @@ class PostgreSQLSession(SQLSession):
             values = []
 
             if filters:
-                for key, value in filters.items():
-                    idx = len(values) + 1
-                    where_clauses.append(f"{key} = ${idx}")
-                    values.append(value)
+                if issubclass(type(filters), BaseExpression):
+                    where_sql, where_vals = self.compile_expression(filters)
+                    where_clauses.append(where_sql)
+                    values.extend(where_vals)
+                else:
+                    for key, value in filters.items():
+                        idx = len(values) + 1
+                        where_clauses.append(f"{key} = ${idx}")
+                        values.append(value)
 
             if after_id is not None:
                 idx = len(values) + 1
@@ -210,7 +232,9 @@ class PostgreSQLSession(SQLSession):
         except Exception as e:
             raise self.process_exception(e)
 
-    async def update(self, model: Schema, filters: dict, updates: dict):
+    async def update(
+        self, model: Schema, filters: dict | BaseExpression, updates: dict
+    ):
         if not filters:
             raise ValueError("filters are empty")
         try:
@@ -231,10 +255,15 @@ class PostgreSQLSession(SQLSession):
                 values.append(value)
 
             where_clauses = []
-            for attr, value in filters.items():
-                idx = len(values) + 1
-                where_clauses.append(f"{attr} = ${idx}")
-                values.append(value)
+            if issubclass(type(filters), BaseExpression):
+                where_sql, where_vals = self.compile_expression(filters)
+                where_clauses.append(where_sql)
+                values.extend(where_vals)
+            else:
+                for attr, value in filters.items():
+                    idx = len(values) + 1
+                    where_clauses.append(f"{attr} = ${idx}")
+                    values.append(value)
 
             set_clause = ", ".join(set_clauses)
             where_clause = " AND ".join(where_clauses)
@@ -258,7 +287,7 @@ class PostgreSQLSession(SQLSession):
         except Exception as e:
             raise self.process_exception(e)
 
-    async def delete(self, model: Union[T, Type[T]], filters: dict):
+    async def delete(self, model: Union[T, Type[T]], filters: dict | BaseExpression):
         try:
             table = Storage.get_model_class(model)
             table_name = table.__name__.lower()
@@ -266,10 +295,15 @@ class PostgreSQLSession(SQLSession):
             where_clauses = []
             values = []
 
-            for attr, value in filters.items():
-                idx = len(values) + 1
-                where_clauses.append(f"{attr} = ${idx}")
-                values.append(value)
+            if issubclass(type(filters), BaseExpression):
+                where_sql, where_vals = self.compile_expression(filters)
+                where_clauses.append(where_sql)
+                values.extend(where_vals)
+            else:
+                for attr, value in filters.items():
+                    idx = len(values) + 1
+                    where_clauses.append(f"{attr} = ${idx}")
+                    values.append(value)
 
             where_clause = " AND ".join(where_clauses)
             sql = f"DELETE FROM {table_name} WHERE {where_clause}"
@@ -282,7 +316,7 @@ class PostgreSQLSession(SQLSession):
     async def bulk_delete(
         self,
         model: Union[T, Type[T]],
-        filters: dict = None,
+        filters: dict | BaseExpression = None,
         contains: dict = None,
     ) -> int:
         try:
@@ -293,10 +327,15 @@ class PostgreSQLSession(SQLSession):
             values = []
 
             if filters:
-                for attr, value in filters.items():
-                    idx = len(values) + 1
-                    where_clauses.append(f"{attr} = ${idx}")
-                    values.append(value)
+                if issubclass(type(filters), BaseExpression):
+                    where_sql, where_vals = self.compile_expression(filters)
+                    where_clauses.append(where_sql)
+                    values.extend(where_vals)
+                else:
+                    for attr, value in filters.items():
+                        idx = len(values) + 1
+                        where_clauses.append(f"{attr} = ${idx}")
+                        values.append(value)
 
             if contains:
                 schema = model.get_schema()
@@ -351,6 +390,7 @@ class PostgreSQLSession(SQLSession):
             self.connection = None
         await self.pool.close()
 
+    @classmethod
     def get_placeholder(self, count: int):
         return ",".join([f"${i}" for i in range(1, count + 1)])
 

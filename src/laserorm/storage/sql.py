@@ -4,7 +4,20 @@ from .storage import StorageSession
 from ..core.schema import Schema, MissingDefault, CurrentTimeStamp
 from datetime import datetime
 from .storage import Index
-from typing import Any
+from typing import TypeVar, Type, Union, Any, get_origin, get_args
+from ..core.expressions import (
+    BaseExpression,
+    AndExpression,
+    OrExpression,
+    EqualExpression,
+    NotEqualExpression,
+    LessThanExpression,
+    LessThanOrEqualExpression,
+    GreaterThanExpression,
+    GreaterThanOrEqualExpression,
+    InExpression,
+    NotInExpression,
+)
 
 
 class SQLSession(StorageSession):
@@ -96,6 +109,106 @@ class SQLSession(StorageSession):
         except Exception as e:
             raise self.process_exception(e)
 
+    @classmethod
+    def compile_expression(cls, expression: BaseExpression) -> tuple[str, Any]:
+        def resolve_callable(value):
+            return value() if callable(value) else value
+
+        def validate_value(value: Any, type_hint: Any) -> bool:
+            value = resolve_callable(value)
+            if type_hint is None:
+                return True
+            origin = get_origin(type_hint)
+            args = get_args(type_hint)
+            if origin is Union:
+                return any(validate_value(value, arg) for arg in args)
+            if origin is list:
+                # Column is list[T] but comparisons generally won't be on list types; allow any
+                return isinstance(value, list)
+            if origin is dict:
+                return isinstance(value, dict)
+            if hasattr(type_hint, "__name__"):
+                try:
+                    return isinstance(value, type_hint)
+                except TypeError:
+                    return True
+            return True
+
+        def validate_collection(values: list[Any], expr: BaseExpression):
+            """Validate a list/tuple against a list[...] type hint"""
+            type_hint = expr.type_hint
+            origin = get_origin(type_hint)
+            args = get_args(type_hint)
+
+            # TODO: use type resolution like we have in the schema to_model
+            # If column type is list[str], we validate each element as str
+            if origin is list and args:
+                inner_type = args[0]
+                for v in values:
+                    if not validate_value(v, inner_type):
+                        raise TypeError(
+                            f"Invalid IN element type for {expr.key}: {type(v)}. Expected {inner_type}"
+                        )
+            else:
+                if not isinstance(values, (list, tuple, set)):
+                    raise TypeError(f"Expected list/tuple/set for {expr.key}")
+
+        def compile(expr: BaseExpression) -> tuple[str, list[Any]]:
+            # recursive types(left + right)
+            if isinstance(expr, AndExpression):
+                left_sql, left_values = compile(expr.left)
+                right_sql, right_values = compile(expr.right)
+
+                return f"({left_sql}) AND ({right_sql})", [*left_values, *right_values]
+
+            if isinstance(expr, OrExpression):
+                left_sql, left_values = compile(expr.left)
+                right_sql, right_values = compile(expr.right)
+
+                return f"({left_sql}) OR ({right_sql})", [*left_values, *right_values]
+
+            # collection operators first (avoid validating the list container as a scalar)
+            if isinstance(expr, InExpression):
+                values = [resolve_callable(v) for v in list(expr.value)]
+                validate_collection(values, expr)
+                placeholders = cls.get_placeholder(len(values))
+                return f"{expr.key} IN ({placeholders})", values
+
+            if isinstance(expr, NotInExpression):
+                values = [resolve_callable(v) for v in list(expr.value)]
+                validate_collection(values, expr)
+                placeholders = cls.get_placeholder(len(values))
+                return f"{expr.key} NOT IN ({placeholders})", values
+
+            # flat scalar operators
+            val = resolve_callable(expr.value)
+            if not validate_value(val, expr.type_hint):
+                raise TypeError(
+                    f"Invalid type for {expr.key}: {type(val)}. Expected {expr.type_hint}"
+                )
+            if isinstance(expr, EqualExpression):
+
+                return f"{expr.key} = ?", [val]
+            if isinstance(expr, NotEqualExpression):
+                return f"{expr.key} != ?", [val]
+            if isinstance(expr, LessThanExpression):
+
+                return f"{expr.key} < ?", [val]
+            if isinstance(expr, LessThanOrEqualExpression):
+
+                return f"{expr.key} <= ?", [val]
+            if isinstance(expr, GreaterThanExpression):
+
+                return f"{expr.key} > ?", [val]
+            if isinstance(expr, GreaterThanOrEqualExpression):
+
+                return f"{expr.key} >= ?", [val]
+
+            d = expr.to_dict()
+            raise NotImplementedError(f"Unsupported expression: {d}")
+
+        return compile(expression)
+
     @abstractmethod
     def python_to_sqltype(self, py_type: str) -> str:
         pass
@@ -104,8 +217,9 @@ class SQLSession(StorageSession):
     async def execute(self, query):
         pass
 
+    @classmethod
     @abstractmethod
-    async def get_placeholder(self, count: int):
+    async def get_placeholder(cls, count: int):
         pass
 
     def get_default_datetime_sql(self):

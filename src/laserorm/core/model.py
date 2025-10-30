@@ -1,5 +1,5 @@
 from typing import get_type_hints, Optional, Union, get_origin, get_args
-from .expressions import *
+from .expressions import Expression
 from types import UnionType
 import datetime
 import inspect
@@ -32,7 +32,7 @@ class Column:
     def __get__(self, instance, owner):
         """Class-level access returns an Expression, instance-level gets stored value"""
         if instance is None:
-            return Expression(self.key, self.value, self.metadata)
+            return Expression(self.key, self.value, self.metadata, self.type_hint)
         return instance.__dict__.get(self.name, None)
 
     def __set__(self, instance, value):

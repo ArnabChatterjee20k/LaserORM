@@ -11,6 +11,7 @@ from typing import Dict
 from laserorm.core.schema import Schema
 from laserorm.core.model import Model
 from ..resources import Account
+from laserorm.core.expressions import BaseExpression
 
 
 # Model version of Account for testing
@@ -63,8 +64,11 @@ class BaseStorageTest(ABC):
                 assert len(lst) >= 1
 
                 # update
+                # also validate expression-style update filter
                 updated = await session.update(
-                    Account, {"uid": "x"}, {"permissions": ["read", "update"]}
+                    Account,
+                    Account.to_model().uid == "x",
+                    {"permissions": ["read", "update"]},
                 )
                 assert "update" in updated.permissions
                 assert "read" in updated.permissions
@@ -89,9 +93,14 @@ class BaseStorageTest(ABC):
                 await session.create(Account(uid="u2", permissions=["read", "write"]))
                 await session.create(Account(uid="u3", permissions=["delete"]))
 
-                # filter by uid
+                # filter by uid (dict)
                 res = await session.list(Account, filters={"uid": "u2"})
                 assert len(res) == 1 and res[0].uid == "u2"
+
+                # filter by uid (expression)
+                Model = Account.to_model()
+                res_expr = await session.list(Account, filters=(Model.uid == "u2"))
+                assert len(res_expr) == 1 and res_expr[0].uid == "u2"
 
                 # contains on list field
                 res = await session.list(Account, contains={"permissions": "write"})
@@ -404,8 +413,11 @@ class BaseStorageTest(ABC):
                 assert len(lst) >= 1
 
                 # update
+                # expression filter update
                 updated = await session.update(
-                    AccountModel, {"uid": "y"}, {"permissions": ["write", "delete"]}
+                    AccountModel,
+                    (AccountModel.uid == "y") | (AccountModel.permissions[["write"]]),
+                    {"permissions": ["write", "delete"]},
                 )
                 assert (
                     updated
@@ -414,7 +426,8 @@ class BaseStorageTest(ABC):
                 )
 
                 # delete
-                deleted = await session.delete(AccountModel, {"uid": "y"})
+                # expression filter delete
+                deleted = await session.delete(AccountModel, (AccountModel.uid == "y"))
                 assert deleted
 
                 # verify deletion
@@ -441,19 +454,25 @@ class BaseStorageTest(ABC):
                 assert created.uid == "z"
                 assert created.id is not None
 
-                # get
-                got = await session.get(AccountModelFromSchema, filters={"uid": "z"})
+                # get by expression
+                Model = Account.to_model()
+                got = await session.get(
+                    AccountModelFromSchema, filters=(Model.uid == "z")
+                )
                 assert got and got.uid == "z"
                 assert got.permissions == ["admin"]
 
                 # list
-                lst = await session.list(AccountModelFromSchema, limit=10)
+                # list by expression
+                lst = await session.list(
+                    AccountModelFromSchema, limit=10, filters=(Model.uid[["z"]])
+                )
                 assert len(lst) >= 1
 
                 # update
                 updated = await session.update(
                     AccountModelFromSchema,
-                    {"uid": "z"},
+                    (Model.uid == "z"),
                     {"permissions": ["admin", "super"]},
                 )
                 assert (
@@ -463,7 +482,9 @@ class BaseStorageTest(ABC):
                 )
 
                 # delete
-                deleted = await session.delete(AccountModelFromSchema, {"uid": "z"})
+                deleted = await session.delete(
+                    AccountModelFromSchema, (Model.uid == "z")
+                )
                 assert deleted
 
                 # verify deletion

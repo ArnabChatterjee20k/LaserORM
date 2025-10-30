@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager, AbstractAsyncContextManager
 from typing import TypeVar, TypedDict, AsyncGenerator, Any, Union, Type, Optional, List
 from ..core.schema import Schema
 from ..core.model import Model
+from ..core.expressions import BaseExpression
 
 
 class Index(TypedDict):
@@ -64,6 +65,10 @@ class StorageSession(ABC):
     async def init_schema(self, schema: Schema): ...
     @abstractmethod
     async def init_index(self, table: str, indexes: List[Index]): ...
+    @classmethod
+    @abstractmethod
+    def compile_expression(cls, expression: BaseExpression):
+        str: ...
 
 
 # to create independent sessions and connection objects and since its returning StorageSession which implements aenter and aexit , we can use `async with storage.session()`
