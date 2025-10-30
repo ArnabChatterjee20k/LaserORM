@@ -134,6 +134,52 @@ async with storage.session() as session:
 
 ## 🔧 Advanced Features
 
+### Expressions (powerful, pythonic filters)
+
+LaserORM provides a lightweight expression system that lets you build safe, composable WHERE clauses using normal Python operators.
+
+- Equality/relational: `==`, `!=`, `<`, `<=`, `>`, `>=`
+- Logical: `&` (AND), `|` (OR)
+- Membership:
+  - IN: `Model.field[[v1, v2, ...]]`
+  - NOT IN: `Model.field[{"not": [v1, v2, ...]}]`
+  - NOT IN : `~(Model.field[[v1, v2, ...]])`
+
+Examples:
+```python
+from src.laserorm.storage.sqlite import SQLite
+from src.laserorm.core.model import Model
+
+class Account(Model):
+    uid: str
+    is_active: bool
+    score: int
+
+storage = SQLite("expr_demo.db")
+
+async with storage.session() as session:
+    await session.init_schema(Account)
+    await session.create(Account(uid="u1", is_active=True, score=10))
+    await session.create(Account(uid="u2", is_active=False, score=5))
+
+    # Equality
+    one = await session.get(Account, filters=(Account.uid == "u1"))
+
+    # AND / OR with nesting
+    expr = (Account.is_active == True) & ((Account.score > 7) | (Account.score == 5))
+    many = await session.list(Account, filters=expr)
+
+    # IN
+    in_expr = Account.uid[["u1", "u3"]]
+    in_rows = await session.list(Account, filters=in_expr)
+
+    # NOT IN
+    not_in_expr = Account.uid[{"not": ["u2"]}]
+    rest = await session.list(Account, filters=not_in_expr)
+```
+
+Type safety via `type_hint` is propagated from field definitions to expressions, and validated when compiling to SQL. Callables used as values (e.g., `lambda: 5`) are evaluated automatically.
+
 ### Complex Queries
 ```python
 # Filter by multiple fields
@@ -153,6 +199,60 @@ async with storage.begin() as session:
     user1 = await session.create(User(email="user1@example.com", name="User 1"))
     user2 = await session.create(User(email="user2@example.com", name="User 2"))
     # Both users are created atomically
+```
+
+### Schema: declarative data classes
+
+`Schema` is a dataclass-first API with built-in metadata, great for portability and explicit defaults. Convert any `Schema` to a runtime `Model` with `to_model()` to leverage expressions.
+
+```python
+from src.laserorm.core.schema import Schema, create_field, FieldMetadataOptions
+from src.laserorm.storage.sqlite import SQLite
+
+class User(Schema):
+    uid: str = create_field(FieldMetadataOptions(index=True))
+    name: str = create_field(FieldMetadataOptions())
+    age: int = create_field(FieldMetadataOptions())
+
+UserModel = User.to_model()  # converts Schema → Model with columns/expressions
+
+storage = SQLite("schema_demo.db")
+async with storage.session() as session:
+    await session.init_schema(User)
+    await session.create(User(uid="u1", name="Alice", age=20))
+
+    # Use expression filters via the generated Model
+    got = await session.get(UserModel, filters=(UserModel.uid == "u1"))
+    older = await session.list(UserModel, filters=(UserModel.age >= 18))
+```
+
+Key points:
+- `Schema` controls on-disk shape (defaults, JSON typing, indexes)
+- `to_model()` generates a dynamic `Model` with expression-ready fields
+
+### Model: minimal runtime model with expressions
+
+`Model` is the runtime-friendly variant that’s expression-enabled out of the box. Just annotate fields to generate columns.
+
+```python
+from src.laserorm.core.model import Model
+from src.laserorm.storage.sqlite import SQLite
+
+class Account(Model):
+    uid: str
+    permissions: list[str]
+    is_active: bool = True
+
+storage = SQLite("model_demo.db")
+async with storage.session() as session:
+    await session.init_schema(Account)
+    await session.create(Account(uid="a1", permissions=["read"]))
+    await session.create(Account(uid="a2", permissions=["read", "write"]))
+
+    # Expressions
+    one = await session.get(Account, filters=(Account.uid == "a2"))
+    some = await session.list(Account, filters=(Account.uid[["a1", "a3"]]))
+    not_a2 = await session.list(Account, filters=(Account.uid[{"not": ["a2"]}]))
 ```
 
 ### JSON Support
@@ -223,6 +323,7 @@ Just like a laser focuses light into a powerful, precise beam, LaserORM focuses 
 Check out the `src/tests/` directory for comprehensive examples of:
 - CRUD operations
 - Complex queries with filters and contains
+- Expression filters (AND/OR, IN/NOT IN, comparisons)
 - JSON field handling
 - Transaction management
 - Multi-database usage
