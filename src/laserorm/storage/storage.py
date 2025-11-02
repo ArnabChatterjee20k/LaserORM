@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager, AbstractAsyncContextManager
 from typing import TypeVar, TypedDict, AsyncGenerator, Any, Union, Type, Optional, List
+from dataclasses import dataclass
 from ..core.schema import Schema
 from ..core.model import Model
 from ..core.expressions import BaseExpression
@@ -9,6 +10,14 @@ from ..core.expressions import BaseExpression
 class Index(TypedDict):
     col: str
     type: str
+
+
+@dataclass
+class ExecutionResult:
+    rows: list[dict[str, Any]] | None
+    lastrowid: int | None
+    rowcount: int
+    description: list[Any] | None
 
 
 T = TypeVar("T", bound=Schema)
@@ -61,6 +70,10 @@ class StorageSession(ABC):
     async def connect(self) -> "StorageSession": ...
     @abstractmethod
     async def close(self): ...
+    @abstractmethod
+    async def execute(
+        self, sql: str, *args, with_description=False, force_commit=False
+    ) -> ExecutionResult: ...
     @abstractmethod
     async def init_schema(self, schema: Schema): ...
     @abstractmethod

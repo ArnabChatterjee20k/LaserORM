@@ -1,6 +1,6 @@
 from abc import abstractmethod
 import json
-from .storage import StorageSession
+from .storage import StorageSession, ExecutionResult
 from ..core.schema import Schema, MissingDefault, CurrentTimeStamp
 from datetime import datetime
 from .storage import Index
@@ -103,8 +103,8 @@ class SQLSession(StorageSession):
             placeholders = self.get_placeholder(len(values))
             column_names = ",".join(columns)
             sql = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders}) RETURNING id"
-            row_id = await self.execute(sql, values)
-            model.id = row_id
+            result = await self.execute(sql, values)
+            model.id = result.lastrowid
             return model
         except Exception as e:
             raise self.process_exception(e)
@@ -187,22 +187,21 @@ class SQLSession(StorageSession):
                     f"Invalid type for {expr.key}: {type(val)}. Expected {expr.type_hint}"
                 )
             if isinstance(expr, EqualExpression):
-
-                return f"{expr.key} = ?", [val]
+                return f"{expr.key} = {cls.get_placeholder(1)}", [val]
             if isinstance(expr, NotEqualExpression):
-                return f"{expr.key} != ?", [val]
+                return f"{expr.key} != {cls.get_placeholder(1)}", [val]
             if isinstance(expr, LessThanExpression):
 
-                return f"{expr.key} < ?", [val]
+                return f"{expr.key} < {cls.get_placeholder(1)}", [val]
             if isinstance(expr, LessThanOrEqualExpression):
 
-                return f"{expr.key} <= ?", [val]
+                return f"{expr.key} <= {cls.get_placeholder(1)}", [val]
             if isinstance(expr, GreaterThanExpression):
 
-                return f"{expr.key} > ?", [val]
+                return f"{expr.key} > {cls.get_placeholder(1)}", [val]
             if isinstance(expr, GreaterThanOrEqualExpression):
 
-                return f"{expr.key} >= ?", [val]
+                return f"{expr.key} >= {cls.get_placeholder(1)}", [val]
 
             d = expr.to_dict()
             raise NotImplementedError(f"Unsupported expression: {d}")
@@ -211,10 +210,6 @@ class SQLSession(StorageSession):
 
     @abstractmethod
     def python_to_sqltype(self, py_type: str) -> str:
-        pass
-
-    @abstractmethod
-    async def execute(self, query):
         pass
 
     @classmethod

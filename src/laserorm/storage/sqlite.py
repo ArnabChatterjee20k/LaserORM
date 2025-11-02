@@ -1,24 +1,12 @@
-from .sql import SQLSession, StorageSession
+from .sql import SQLSession
 from contextlib import asynccontextmanager
-from .storage import Storage
+from .storage import Storage, ExecutionResult
 from ..core.schema import Schema
 import aiosqlite
 from datetime import datetime
-from typing import TypeVar, Type, Union, Any, get_origin, get_args
+from typing import TypeVar, Type, Union
 from .storage import Index
-from ..core.expressions import (
-    BaseExpression,
-    AndExpression,
-    OrExpression,
-    EqualExpression,
-    NotEqualExpression,
-    LessThanExpression,
-    LessThanOrEqualExpression,
-    GreaterThanExpression,
-    GreaterThanOrEqualExpression,
-    InExpression,
-    NotInExpression,
-)
+from ..core.expressions import BaseExpression
 
 T = TypeVar("T", bound=Schema)
 
@@ -46,12 +34,25 @@ class SQLiteSession(SQLSession):
         }
         return mapping.get(py_type, "TEXT")
 
-    async def execute(self, sql: str, *args, force_commit=False):
+    async def execute(
+        self, sql: str, *args, with_description=False, force_commit=False
+    ) -> ExecutionResult:
         async with self.connection.execute(sql, *args) as cursor:
             # commit is getting controlled externall via transactions
             if force_commit:
                 await self.connection.commit()
-            return cursor.lastrowid
+            result = await cursor.fetchall()
+            rows = []
+            if result:
+                rows = [{row[0]: row[1]} if len(row) > 1 else {} for row in result]
+            # for detailed description use execute on f"PRAGMA table_info({table_name})"
+            return ExecutionResult(
+                rows=rows,
+                lastrowid=cursor.lastrowid,
+                # cursor.rowcount returning -1 sometimes
+                rowcount=len(rows),
+                description=cursor.description if with_description else None,
+            )
 
     async def init_index(self, table: str, indexes: list[Index]):
         if not indexes:

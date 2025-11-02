@@ -1,6 +1,6 @@
-from .sql import SQLSession, StorageSession
+from .sql import SQLSession
 from contextlib import asynccontextmanager
-from .storage import Storage
+from .storage import Storage, ExecutionResult
 from ..core.schema import Schema
 import asyncpg
 from asyncpg.transaction import Transaction
@@ -8,19 +8,7 @@ import json
 from datetime import datetime
 from typing import TypeVar, Type, Union, AsyncGenerator, Any
 from .storage import Index
-from ..core.expressions import (
-    BaseExpression,
-    AndExpression,
-    OrExpression,
-    EqualExpression,
-    NotEqualExpression,
-    LessThanExpression,
-    LessThanOrEqualExpression,
-    GreaterThanExpression,
-    GreaterThanOrEqualExpression,
-    InExpression,
-    NotInExpression,
-)
+from ..core.expressions import BaseExpression
 
 T = TypeVar("T", bound=Schema)
 
@@ -75,22 +63,38 @@ class PostgreSQLSession(SQLSession):
                 else:
                     yield conn
 
-    async def execute(self, sql: str, *args, force_commit=False):
-        try:
-            row: asyncpg.Record = None
-            # Flatten args if needed
-            if len(args) == 1 and isinstance(args[0], (list, tuple)):
-                args = args[0]
-
-            async with self.get_connection(with_transaction=force_commit) as connection:
-                row = await connection.fetchrow(sql, *args)
-
-            if row:
-                return row.get("id")
-            return row
-        except Exception as e:
-            print(f"Error executing SQL: {sql}, args: {args}, error: {e}")
-            raise
+    async def execute(
+        self, sql: str, *args, with_description=False, force_commit=False
+    ) -> ExecutionResult:
+        # Flatten args if needed
+        if len(args) == 1 and isinstance(args[0], (list, tuple)):
+            args = args[0]
+        async with self.get_connection(with_transaction=force_commit) as connection:
+            # using explicitly prepared statement to get the description of the query and results(very lightweight query will be made)
+            description = None
+            rows: list[asyncpg.Record] = []
+            if with_description:
+                stmt = await connection.prepare(sql)
+                description = [
+                    {
+                        "name": attr.name,
+                        "data_type": (
+                            attr.type.name if hasattr(attr.type, "name") else None
+                        ),
+                    }
+                    for attr in stmt.get_attributes()
+                ]
+                rows = await stmt.fetch(*args)
+            else:
+                rows = await connection.fetch(sql, *args)
+            if rows:
+                rows = [dict(row) for row in rows]
+            return ExecutionResult(
+                rows=rows,
+                lastrowid=(rows[0] if rows else {}).get("id"),
+                rowcount=len(rows),
+                description=description,
+            )
 
     async def init_index(self, table: str, indexes: list[Index]):
         if not indexes:
@@ -251,12 +255,21 @@ class PostgreSQLSession(SQLSession):
 
             for attr, value in updates.items():
                 idx = len(values) + 1
-                set_clauses.append(f"{attr} = ${idx}")
+                if "json" in schema.get(attr).get("type") and value is not None:
+                    set_clauses.append(f"{attr} = ${idx}::jsonb")
+                else:
+                    set_clauses.append(f"{attr} = ${idx}")
                 values.append(value)
 
             where_clauses = []
             if issubclass(type(filters), BaseExpression):
                 where_sql, where_vals = self.compile_expression(filters)
+                offset = len(values)
+                # replacing the $i in compiled expression via replacing as asyncpg works via $index
+                # though placeholder is used but $i will be always $1
+                # making index will be hard accross functions as index is mutated here + will be mutated in the compiled expression as well
+                for i in range(1, len(where_vals) + 1):
+                    where_sql = where_sql.replace(f"${i}", f"${i + offset}")
                 where_clauses.append(where_sql)
                 values.extend(where_vals)
             else:

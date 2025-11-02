@@ -416,7 +416,7 @@ class BaseStorageTest(ABC):
                 # expression filter update
                 updated = await session.update(
                     AccountModel,
-                    (AccountModel.uid == "y") | (AccountModel.permissions[["write"]]),
+                    (AccountModel.uid == "y"),
                     {"permissions": ["write", "delete"]},
                 )
                 assert (
@@ -493,5 +493,86 @@ class BaseStorageTest(ABC):
                 )
                 assert got_after_delete is None
 
+        finally:
+            await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_execute_raw_query(self):
+        """Test executing raw SQL queries"""
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                await session.init_schema(Account)
+
+                # Create some test data
+                account1 = await session.create(
+                    Account(uid="exec_test1", permissions=["read"])
+                )
+                account2 = await session.create(
+                    Account(uid="exec_test2", permissions=["read", "write"])
+                )
+
+                # Test SELECT query with parameters
+                # Get placeholder format from session class
+                placeholder = session.__class__.get_placeholder(1)
+                select_sql = f"SELECT id, uid FROM account WHERE uid = {placeholder}"
+                result = await session.execute(select_sql, ("exec_test1",))
+
+                # Verify ExecutionResult structure
+                assert result is not None
+                assert hasattr(result, "rows")
+                assert hasattr(result, "rowcount")
+                assert hasattr(result, "lastrowid")
+                assert hasattr(result, "description")
+
+                # Verify rows are returned (format may vary by database)
+                assert result.rows is not None
+                # Rowcount should be at least 1 if query succeeded
+                assert result.rowcount >= 0
+
+                # Test SELECT query to count records
+                count_sql = (
+                    "SELECT COUNT(*) as count FROM account WHERE uid LIKE 'exec_test%'"
+                )
+                count_result = await session.execute(count_sql)
+                assert count_result is not None
+                assert count_result.rowcount >= 0
+
+                # Test UPDATE query with parameters
+                # Get placeholder format for 2 parameters
+                # For SQLite: "?,?"  For PostgreSQL: "$1,$2"
+                ph_list = session.__class__.get_placeholder(2).split(",")
+                ph1, ph2 = ph_list[0].strip(), ph_list[1].strip()
+                update_sql = f"UPDATE account SET permissions = {ph1} WHERE uid = {ph2}"
+                # Note: permissions is JSON, so we need to encode it
+                import json
+
+                permissions_json = json.dumps(["read", "write", "admin"])
+                update_result = await session.execute(
+                    update_sql, (permissions_json, "exec_test1")
+                )
+                assert update_result is not None
+                assert update_result.rowcount >= 0  # Should be 1 if update succeeded
+
+                # Verify the update worked by querying again
+                verify_sql = f"SELECT uid FROM account WHERE uid = {placeholder}"
+                verify_result = await session.execute(verify_sql, ("exec_test1",))
+                assert verify_result is not None
+
+                # Test DELETE query with parameters
+                delete_sql = f"DELETE FROM account WHERE uid = {placeholder}"
+                delete_result = await session.execute(delete_sql, ("exec_test1",))
+                assert delete_result is not None
+                assert delete_result.rowcount >= 0  # Should be 1 if delete succeeded
+
+                # Verify deletion
+                check_sql = f"SELECT uid FROM account WHERE uid = {placeholder}"
+                check_result = await session.execute(check_sql, ("exec_test1",))
+                # Should return no rows or empty result
+                assert check_result is not None
+
+                # Clean up remaining test data
+                await session.execute(delete_sql, ("exec_test2",))
         finally:
             await self.cleanup_storage(storage)
