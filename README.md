@@ -73,6 +73,29 @@ async with storage.session() as session:
 ## 🚀 Quick Start
 
 ### Installation
+
+#### Option 1: Install from GitHub (pip)
+```bash
+# Basic installation (install from master/main branch)
+pip install git+https://github.com/ArnabChatterjee20k/LaserORM.git
+
+# For SQLite support
+pip install "git+https://github.com/ArnabChatterjee20k/LaserORM.git#egg=laserorm[sqlite]"
+
+# For PostgreSQL support
+pip install "git+https://github.com/ArnabChatterjee20k/LaserORM.git#egg=laserorm[postgres]"
+
+# For both SQLite and PostgreSQL
+pip install "git+https://github.com/ArnabChatterjee20k/LaserORM.git#egg=laserorm[sqlite,postgres]"
+
+# Install from a specific branch
+pip install git+https://github.com/ArnabChatterjee20k/LaserORM.git@branch-name
+
+# Install from a specific tag/version
+pip install git+https://github.com/ArnabChatterjee20k/LaserORM.git@v0.1.0
+```
+
+#### Option 2: Install using uv (recommended)
 ```bash
 # For SQLite support
 uv add laserorm[sqlite]
@@ -83,6 +106,8 @@ uv add laserorm[postgres]
 # For development
 uv add --group dev laserorm[sqlite,postgres]
 ```
+
+> **Note:** Replace `ArnabChatterjee20k` with your actual GitHub username/organization in the pip install commands above.
 
 ### Basic Usage
 
