@@ -20,7 +20,7 @@ class ExecutionResult:
     description: list[Any] | None
 
 
-T = TypeVar("T", bound=Schema)
+T = TypeVar("T", Schema, Model)
 
 
 class StorageSession(ABC):
@@ -59,7 +59,7 @@ class StorageSession(ABC):
         after_id: Optional[int] = None,
         filters: Optional[dict] = None,
         contains: Optional[dict] = None,
-    ) -> T: ...
+    ) -> list[T]: ...
     @abstractmethod
     async def begin(self): ...
     @abstractmethod
@@ -75,7 +75,7 @@ class StorageSession(ABC):
         self, sql: str, *args, with_description=False, force_commit=False
     ) -> ExecutionResult: ...
     @abstractmethod
-    async def init_schema(self, schema: Schema): ...
+    async def init_schema(self, schema: T): ...
     @abstractmethod
     async def init_index(self, table: str, indexes: List[Index]): ...
     @classmethod
@@ -111,7 +111,7 @@ class Storage(ABC):
             finally:
                 await session.close()
 
-    def get_model_class(model: object) -> Type[Schema]:
+    def get_model_class(model: Union[T, Type[T]]) -> Type[T]:
         # Model instance (Schema()) is provided
         if isinstance(model, Schema) or isinstance(model, Model):
             return model.__class__

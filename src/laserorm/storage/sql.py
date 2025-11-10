@@ -1,10 +1,10 @@
 from abc import abstractmethod
 import json
-from .storage import StorageSession, ExecutionResult
+from .storage import T, StorageSession
 from ..core.schema import Schema, MissingDefault, CurrentTimeStamp
 from datetime import datetime
 from .storage import Index
-from typing import TypeVar, Type, Union, Any, get_origin, get_args
+from typing import Union, Any, get_origin, get_args
 from ..core.expressions import (
     BaseExpression,
     AndExpression,
@@ -21,7 +21,7 @@ from ..core.expressions import (
 
 
 class SQLSession(StorageSession):
-    async def init_schema(self, model: Schema) -> str:
+    async def init_schema(self, model: T) -> str:
         table_name = model.__name__.lower()
         schema = model.get_schema()
         columns_sql = []
@@ -94,7 +94,7 @@ class SQLSession(StorageSession):
         await self.init_index(table_name, indexes)
         return create_table_sql
 
-    async def create(self, model: Schema) -> Schema:
+    async def create(self, model: T) -> T:
         try:
             table_name = type(model).__name__.lower()
             model_values = self.encode(model.get_schema(), model.get_values())
