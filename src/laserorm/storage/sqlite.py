@@ -34,24 +34,25 @@ class SQLiteSession(SQLSession):
         }
         return mapping.get(py_type, "TEXT")
 
-    async def execute(
-        self, sql: str, *args, with_description=False, force_commit=False
-    ) -> ExecutionResult:
+    async def execute(self, sql: str, *args, force_commit=False) -> ExecutionResult:
         async with self.connection.execute(sql, *args) as cursor:
             # commit is getting controlled externall via transactions
             if force_commit:
                 await self.connection.commit()
             result = await cursor.fetchall()
             rows = []
-            if result:
-                rows = [{row[0]: row[1]} if len(row) > 1 else {} for row in result]
+            column_names = None
+            if result and cursor.description:
+                column_names = list(map(lambda e: e[0], cursor.description))
+                rows = [dict(zip(column_names, row)) for row in result]
+
             # for detailed description use execute on f"PRAGMA table_info({table_name})"
             return ExecutionResult(
                 rows=rows,
                 lastrowid=cursor.lastrowid,
                 # cursor.rowcount returning -1 sometimes
                 rowcount=len(rows),
-                description=cursor.description if with_description else None,
+                description=column_names,
             )
 
     async def init_index(self, table: str, indexes: list[Index]):

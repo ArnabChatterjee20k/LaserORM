@@ -61,9 +61,7 @@ class PostgreSQLSession(SQLSession):
                 else:
                     yield conn
 
-    async def execute(
-        self, sql: str, *args, with_description=False, force_commit=False
-    ) -> ExecutionResult:
+    async def execute(self, sql: str, *args, force_commit=False) -> ExecutionResult:
         # Flatten args if needed
         if len(args) == 1 and isinstance(args[0], (list, tuple)):
             args = args[0]
@@ -71,20 +69,17 @@ class PostgreSQLSession(SQLSession):
             # using explicitly prepared statement to get the description of the query and results(very lightweight query will be made)
             description = None
             rows: list[asyncpg.Record] = []
-            if with_description:
-                stmt = await connection.prepare(sql)
-                description = [
-                    {
-                        "name": attr.name,
-                        "data_type": (
-                            attr.type.name if hasattr(attr.type, "name") else None
-                        ),
-                    }
-                    for attr in stmt.get_attributes()
-                ]
-                rows = await stmt.fetch(*args)
-            else:
-                rows = await connection.fetch(sql, *args)
+            stmt = await connection.prepare(sql)
+            description = [
+                {
+                    "name": attr.name,
+                    "data_type": (
+                        attr.type.name if hasattr(attr.type, "name") else None
+                    ),
+                }
+                for attr in stmt.get_attributes()
+            ]
+            rows = await stmt.fetch(*args)
             if rows:
                 rows = [dict(row) for row in rows]
             return ExecutionResult(
