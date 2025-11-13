@@ -168,7 +168,7 @@ class PostgreSQLSession(SQLSession):
         after_id: int | None = None,
         filters: dict | BaseExpression | None = None,
         contains: dict | None = None,
-    ):
+    ) -> list[T]:
         try:
             table = Storage.get_model_class(model)
             table_name = table.__name__.lower()

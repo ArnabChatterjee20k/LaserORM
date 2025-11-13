@@ -20,7 +20,9 @@ class ExecutionResult:
     description: list[Any] | None
 
 
-T = TypeVar("T", Schema, Model)
+# Generic TypeVar that works for both Schema and Model
+# This allows automatic type inference: if you pass Type[User], you get User back
+T = TypeVar("T", bound=Union[Schema, Model])
 
 
 class StorageSession(ABC):
@@ -31,10 +33,15 @@ class StorageSession(ABC):
     async def create(self, model: T) -> T: ...
     @abstractmethod
     async def update(
-        self, model: Union[T, Type[T]], filters: dict, updates: dict
+        self,
+        model: Union[T, Type[T]],
+        filters: Union[dict, BaseExpression],
+        updates: dict,
     ) -> T: ...
     @abstractmethod
-    async def delete(self, model: Union[T, Type[T]], filters: dict) -> bool: ...
+    async def delete(
+        self, model: Union[T, Type[T]], filters: Union[dict, BaseExpression]
+    ) -> bool: ...
 
     @abstractmethod
     async def bulk_delete(
@@ -48,7 +55,7 @@ class StorageSession(ABC):
         self,
         model: Union[T, Type[T]],
         for_update: bool = False,
-        filters: Optional[dict] = None,
+        filters: Optional[Union[dict, BaseExpression]] = None,
         contains: Optional[dict] = None,
     ) -> T: ...
     @abstractmethod
@@ -57,7 +64,7 @@ class StorageSession(ABC):
         model: Union[T, Type[T]],
         limit: int = 25,
         after_id: Optional[int] = None,
-        filters: Optional[dict] = None,
+        filters: Optional[Union[dict, BaseExpression]] = None,
         contains: Optional[dict] = None,
     ) -> list[T]: ...
     @abstractmethod
