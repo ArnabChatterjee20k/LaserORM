@@ -125,7 +125,10 @@ class Model(metaclass=Meta):
             if key in kwargs:
                 setattr(self, key, kwargs[key])
             elif getattr(col, "value", None) is not None:
-                setattr(self, key, col.value)
+                if callable(getattr(col, "value", None)):
+                    setattr(self, key, col.value())
+                else:
+                    setattr(self, key, col.value)
             else:
                 setattr(self, key, None)
 
@@ -184,9 +187,11 @@ class Model(metaclass=Meta):
                         ]
                         if "NoneType" in types:
                             insert_data[field_name] = value
-            elif callable(value):
-                # for default values like dict,list,lambda
-                insert_data[field_name] = value()
+            # The value callable should be set whenever the object is constructed to follow an uniform default value for an object
+            # Commenting this to remind me -> get_values() is just a way to get value , not for setting instance level attributes
+            # elif callable(value):
+            #     # for default values like dict,list,lambda
+            #     insert_data[field_name] = value()
             else:
                 insert_data[field_name] = value
         return insert_data
