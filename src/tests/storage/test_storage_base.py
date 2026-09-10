@@ -576,3 +576,196 @@ class BaseStorageTest(ABC):
                 await session.execute(delete_sql, ("exec_test2",))
         finally:
             await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_execute_reports_columns_for_empty_result(self):
+        """An empty SELECT still describes its columns."""
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                await session.init_schema(Account)
+
+                result = await session.execute(
+                    "SELECT id, uid FROM account WHERE uid = 'definitely-missing'"
+                )
+
+                assert result.rows == []
+                assert result.returns_rows is True
+                assert result.description is not None
+                assert [column["name"] for column in result.description] == [
+                    "id",
+                    "uid",
+                ]
+                assert result.columns == ["id", "uid"]
+        finally:
+            await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_execute_reports_rows_affected_for_writes(self):
+        """INSERT/UPDATE/DELETE report how many rows they wrote."""
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                await session.init_schema(Account)
+                for uid in ("affected1", "affected2"):
+                    await session.create(Account(uid=uid, permissions=["read"]))
+                await session.commit()
+
+                ph1, ph2 = session.__class__.get_placeholder(2).split(",")
+                updated = await session.execute(
+                    f"UPDATE account SET password = {ph1} WHERE uid = {ph2}",
+                    ("secret", "affected1"),
+                    force_commit=True,
+                )
+                assert updated.returns_rows is False
+                assert updated.rows_affected == 1
+
+                deleted = await session.execute(
+                    "DELETE FROM account WHERE uid LIKE 'affected%'",
+                    force_commit=True,
+                )
+                assert deleted.rows_affected == 2
+        finally:
+            await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_get_tables_and_columns(self):
+        """Introspection reports the table and its column metadata."""
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                await session.init_schema(Account)
+
+                tables = await session.get_tables()
+                assert "account" in tables
+
+                columns = await session.get_columns("account")
+                by_name = {column.name: column for column in columns}
+
+                assert "id" in by_name and "uid" in by_name
+                assert by_name["id"].primary_key is True
+                assert by_name["uid"].nullable is False
+                assert by_name["password"].nullable is True
+                assert by_name["uid"].type
+                assert by_name["uid"].indexed is True
+                assert [column.name for column in columns] == sorted(
+                    by_name, key=lambda name: by_name[name].position
+                )
+        finally:
+            await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_get_columns_unknown_table_is_empty(self):
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                await session.init_schema(Account)
+                assert await session.get_columns("no_such_table") == []
+        finally:
+            await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_get_indexes_and_count(self):
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                await session.init_schema(Account)
+                assert await session.count("account") == 0
+
+                await session.create(Account(uid="counted", permissions=[]))
+                await session.commit()
+                assert await session.count("account") == 1
+
+                indexes = await session.get_indexes("account")
+                indexed_columns = {
+                    column for index in indexes for column in index.columns
+                }
+                assert "uid" in indexed_columns
+        finally:
+            await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_pagination_after_id_with_expression_filter(self):
+        """after_id must still apply when filters are expressions, not dicts."""
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                await session.init_schema(Account)
+                created = []
+                for index in range(4):
+                    created.append(
+                        await session.create(
+                            Account(uid=f"cursor{index}", permissions=["read"])
+                        )
+                    )
+                await session.commit()
+
+                AccountM = Account.to_model()
+                second_id = created[1].id
+
+                rows = await session.list(
+                    Account,
+                    filters=(AccountM.is_active == True),
+                    after_id=second_id,
+                )
+                assert [row.uid for row in rows] == ["cursor2", "cursor3"]
+        finally:
+            await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_reports_deleted_count(self):
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                await session.init_schema(Account)
+                for index in range(3):
+                    await session.create(
+                        Account(uid=f"bulk{index}", permissions=["read"])
+                    )
+                await session.create(Account(uid="kept", permissions=["read"]))
+                await session.commit()
+
+                AccountM = Account.to_model()
+                deleted = await session.bulk_delete(
+                    Account, filters=(AccountM.uid[["bulk0", "bulk1", "bulk2"]])
+                )
+                await session.commit()
+
+                assert deleted == 3
+                assert await session.count("account") == 1
+        finally:
+            await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_optional_json_column_roundtrip(self):
+        """A ``dict | None`` column is still stored and read back as JSON."""
+        storage = await self.get_storage()
+
+        try:
+
+            class Doc(Model):
+                name: str
+                payload: dict | None = None
+
+            async with storage.session() as session:
+                await session.init_schema(Doc)
+                await session.execute("DELETE FROM doc", force_commit=True)
+
+                await session.create(Doc(name="a", payload={"nested": [1, 2]}))
+                await session.create(Doc(name="b"))
+                await session.commit()
+
+                with_payload = await session.get(Doc, filters={"name": "a"})
+                assert with_payload.payload == {"nested": [1, 2]}
+
+                without_payload = await session.get(Doc, filters={"name": "b"})
+                assert without_payload.payload is None
+        finally:
+            await self.cleanup_storage(storage)

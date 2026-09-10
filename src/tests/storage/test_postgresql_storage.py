@@ -148,3 +148,15 @@ async def postgres_storage(postgres_uri):
             await session.execute("DROP TABLE IF EXISTS account CASCADE;")
         except Exception:
             pass
+
+@pytest.mark.asyncio
+async def test_failed_connect_raises_real_error():
+    """A session that cannot connect surfaces the connection error, not an
+    AttributeError from closing a pool that was never created."""
+    storage = PostgreSQL("postgresql://nobody:nobody@127.0.0.1:1/nothing")
+
+    with pytest.raises(Exception) as excinfo:
+        async with storage.session():
+            pass
+
+    assert "NoneType" not in str(excinfo.value)

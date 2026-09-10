@@ -14,16 +14,9 @@ from typing import (
 from types import UnionType
 import datetime
 from .model import Model as StaticModel
+from .defaults import MissingDefault, CurrentTimeStamp
 from functools import reduce
 import builtins
-
-
-class MissingDefault:
-    pass
-
-
-class CurrentTimeStamp:
-    pass
 
 
 # using dataclass so that we can easily use it as typing + setting defaults

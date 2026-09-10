@@ -105,3 +105,15 @@ class TestSQLiteStorage(BaseStorageTest):
                 await session.execute(delete_sql, ("exec_test2",))
         finally:
             await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_failed_connect_raises_real_error(self):
+        """A session that cannot connect surfaces the driver error, not an
+        AttributeError from closing a connection that was never opened."""
+        storage = SQLite("Z:/definitely/not/a/writable/path/test.db")
+
+        with pytest.raises(Exception) as excinfo:
+            async with storage.session():
+                pass
+
+        assert "NoneType" not in str(excinfo.value)

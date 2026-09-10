@@ -4,11 +4,9 @@ Unit tests for laserorm.core.model module
 
 import pytest
 from typing import Optional, Union
-from laserorm.core.model import (
-    Model,
-    Column,
+from laserorm.core.model import Model, Column, Meta
+from laserorm.core.expressions import (
     Expression,
-    Meta,
     EqualExpression,
     NotEqualExpression,
     LessThanExpression,

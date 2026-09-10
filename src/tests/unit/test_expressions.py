@@ -1,8 +1,8 @@
 import pytest
 
-from src.laserorm.core.model import Model
-from src.laserorm.storage.sqlite import SQLiteSession
-from src.laserorm.core.expressions import NotInExpression
+from laserorm.core.model import Model
+from laserorm.storage.sqlite import SQLiteSession
+from laserorm.core.expressions import NotInExpression
 
 
 class AccountModel(Model):
@@ -236,7 +236,7 @@ def test_repr_does_not_crash_for_various_expressions():
 
 def test_error_path_unimplemented_to_dict_on_custom_base_subclass():
     # Create a broken subclass without key/value or left/right to trigger NotImplementedError
-    from src.laserorm.core.expressions import BaseExpression
+    from laserorm.core.expressions import BaseExpression
 
     class BrokenExpr(BaseExpression):
         @staticmethod

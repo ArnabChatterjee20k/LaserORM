@@ -13,11 +13,75 @@ class Index(TypedDict):
 
 
 @dataclass
+class ColumnMeta:
+    """Normalised description of one column of a result set, identical across
+    adapters."""
+
+    name: str
+    type: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "type": self.type}
+
+
+@dataclass
+class ColumnInfo:
+    """Schema level information about a column of a table."""
+
+    name: str
+    type: Optional[str] = None
+    nullable: bool = True
+    default: Any = None
+    primary_key: bool = False
+    indexed: bool = False
+    position: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "type": self.type,
+            "nullable": self.nullable,
+            "default": self.default,
+            "primary_key": self.primary_key,
+            "indexed": self.indexed,
+            "position": self.position,
+        }
+
+
+@dataclass
+class IndexInfo:
+    """Information about an index defined on a table."""
+
+    name: str
+    columns: list[str]
+    unique: bool = False
+    primary: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "columns": list(self.columns),
+            "unique": self.unique,
+            "primary": self.primary,
+        }
+
+
+@dataclass
 class ExecutionResult:
     rows: list[dict[str, Any]] | None
     lastrowid: int | None
     rowcount: int
-    description: list[Any] | None
+    description: list[dict[str, Any]] | None
+    #: Number of rows written by a DML statement (INSERT/UPDATE/DELETE).
+    #: ``0`` for statements that do not write.
+    rows_affected: int = 0
+    #: True when the statement produced a result set (even an empty one).
+    returns_rows: bool = False
+
+    @property
+    def columns(self) -> list[str]:
+        """Convenience accessor for just the column names."""
+        return [column["name"] for column in (self.description or [])]
 
 
 # Generic TypeVar that works for both Schema and Model
@@ -84,8 +148,43 @@ class StorageSession(ABC):
     @abstractmethod
     async def init_index(self, table: str, indexes: List[Index]): ...
 
-    # @abstractmethod
-    # def get_collections(self,schema: T):...
+    # Introspection: concrete rather than abstract so an adapter that does not
+    # implement them still instantiates, and fails only when they are used.
+    async def get_schemas(self) -> List[str]:
+        """List the namespaces/schemas available on the connection.
+
+        Backends without a notion of schemas return an empty list.
+        """
+        return []
+
+    async def get_tables(self, schema: Optional[str] = None) -> List[str]:
+        """List user tables (and views) visible on the connection."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement get_tables()"
+        )
+
+    async def get_columns(
+        self, table: str, schema: Optional[str] = None
+    ) -> List[ColumnInfo]:
+        """Describe the columns of ``table``."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement get_columns()"
+        )
+
+    async def get_indexes(
+        self, table: str, schema: Optional[str] = None
+    ) -> List[IndexInfo]:
+        """Describe the indexes defined on ``table``."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement get_indexes()"
+        )
+
+    async def count(self, table: str, schema: Optional[str] = None) -> int:
+        """Exact row count for ``table``."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement count()"
+        )
+
     @classmethod
     @abstractmethod
     def compile_expression(cls, expression: BaseExpression):
@@ -119,6 +218,7 @@ class Storage(ABC):
             finally:
                 await session.close()
 
+    @staticmethod
     def get_model_class(model: Union[T, Type[T]]) -> Type[T]:
         # Model instance (Schema()) is provided
         if isinstance(model, Schema) or isinstance(model, Model):

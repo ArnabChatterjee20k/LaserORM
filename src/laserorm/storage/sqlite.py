@@ -1,10 +1,11 @@
 from .sql import SQLSession
 from contextlib import asynccontextmanager
-from .storage import Storage, ExecutionResult
+from .storage import Storage, ExecutionResult, ColumnInfo, IndexInfo
 from ..core.schema import Schema
 import aiosqlite
+import os
 from datetime import datetime
-from typing import TypeVar, Type, Union
+from typing import TypeVar, Type, Union, Optional, List, Any
 from .storage import Index
 from ..core.expressions import BaseExpression
 
@@ -29,30 +30,48 @@ class SQLiteSession(SQLSession):
             "float": "REAL",
             "datetime": "TEXT",  # store as ISO string
             "json": "TEXT",
+            "dict": "TEXT",
+            "list": "TEXT",
             "NoneType": "TEXT",
             "auto_increment": "AUTOINCREMENT",
         }
         return mapping.get(py_type, "TEXT")
 
+    def format_bool_literal(self, value: bool) -> str:
+        return "1" if value else "0"
+
     async def execute(self, sql: str, *args, force_commit=False) -> ExecutionResult:
         async with self.connection.execute(sql, *args) as cursor:
-            # commit is getting controlled externall via transactions
+            # commit is getting controlled externally via transactions
             if force_commit:
                 await self.connection.commit()
-            result = await cursor.fetchall()
-            rows = []
-            column_names = None
-            if result and cursor.description:
-                column_names = list(map(lambda e: e[0], cursor.description))
-                rows = [dict(zip(column_names, row)) for row in result]
 
-            # for detailed description use execute on f"PRAGMA table_info({table_name})"
+            # set even when the statement returns zero rows
+            returns_rows = cursor.description is not None
+            description = (
+                [
+                    {"name": column[0], "type": None}
+                    for column in cursor.description
+                ]
+                if returns_rows
+                else None
+            )
+
+            rows = []
+            if returns_rows:
+                fetched = await cursor.fetchall()
+                names = [column["name"] for column in description]
+                rows = [dict(zip(names, row)) for row in fetched]
+
+            rows_affected = 0 if returns_rows else max(cursor.rowcount, 0)
+
             return ExecutionResult(
                 rows=rows,
                 lastrowid=cursor.lastrowid,
-                # cursor.rowcount returning -1 sometimes
-                rowcount=len(rows),
-                description=column_names,
+                rowcount=len(rows) if returns_rows else rows_affected,
+                description=description,
+                rows_affected=rows_affected,
+                returns_rows=returns_rows,
             )
 
     async def init_index(self, table: str, indexes: list[Index]):
@@ -82,6 +101,17 @@ class SQLiteSession(SQLSession):
 
         await self.connection.commit()
 
+    def _row_to_instance(self, table, schema: dict, names: list, row) -> Any:
+        """Build a model instance from a raw row, mapping by column name so a
+        table whose physical column order differs from the model still reads.
+        """
+        data = dict(zip(names, row))
+        row_id = data.pop("id", None)
+        data = {key: value for key, value in data.items() if key in schema}
+        instance = table(**self.decode(schema, data))
+        instance.id = row_id
+        return instance
+
     async def get(
         self,
         model: Union[T, Type[T]],
@@ -102,17 +132,16 @@ class SQLiteSession(SQLSession):
                 where = " AND ".join([f"{attribute}=?" for attribute in filters])
                 values = [value for value in filters.values()]
 
-            select = f"SELECT * FROM {table_name} where {where} LIMIT 1"
+            select = f"SELECT * FROM {table_name} WHERE {where} LIMIT 1"
             async with self.connection.execute(select, values) as cursor:
                 row = await cursor.fetchone()
+                names = [column[0] for column in (cursor.description or [])]
             if not row:
                 return None
 
-            # removing id from the from the schema and the row as we can't init id
+            # removing id from the schema and the row as we can't init id
             schema = model.get_schema(exclude=["id"])
-            result = dict(zip(schema, row[1:]))
-            result = table(**self.decode(schema, result))
-            result.id = row[0]
+            result = self._row_to_instance(table, schema, names, row)
 
             if contains:
                 schema = model.get_schema()
@@ -146,37 +175,37 @@ class SQLiteSession(SQLSession):
             where = ""
             values = []
 
+            where_clauses = []
             if filters:
                 if issubclass(type(filters), BaseExpression):
-                    where, compiled_values = self.compile_expression(filters)
+                    compiled_sql, compiled_values = self.compile_expression(filters)
+                    where_clauses.append(compiled_sql)
                     values.extend(compiled_values)
-                    where = f"WHERE {where}"
                 else:
-                    where_clauses = [f"{attribute}=?" for attribute in filters]
+                    where_clauses.extend(f"{attribute}=?" for attribute in filters)
                     values.extend(filters.values())
 
-                    if after_id is not None:
-                        where_clauses.append("id > ?")
-                        values.append(after_id)
-
-                    where = " AND ".join(where_clauses)
-                    where = f"WHERE {where}"
-            elif after_id is not None:
-                where = "WHERE id > ?"
+            if after_id is not None:
+                where_clauses.append("id > ?")
                 values.append(after_id)
 
-            select = f"SELECT * FROM {table_name} {where} ORDER BY id ASC LIMIT {limit}"
+            if where_clauses:
+                where = "WHERE " + " AND ".join(where_clauses)
+
+            limit_sql = "" if limit is None or limit < 0 else f"LIMIT {int(limit)}"
+            select = (
+                f"SELECT * FROM {table_name} {where} ORDER BY id ASC {limit_sql}"
+            ).strip()
 
             async with self.connection.execute(select, values) as cursor:
                 rows = await cursor.fetchall()
+                names = [column[0] for column in (cursor.description or [])]
 
             results = []
 
             schema = model.get_schema(exclude=["id"])
             for row in rows:
-                result_data = dict(zip(schema, row[1:]))
-                obj = table(**self.decode(schema, result_data))
-                obj.id = row[0]
+                obj = self._row_to_instance(table, schema, names, row)
 
                 if contains:
                     valid = True
@@ -224,13 +253,10 @@ class SQLiteSession(SQLSession):
                 sql, (*set_values, *where_values)
             ) as cursor:
                 row = await cursor.fetchone()
+                names = [column[0] for column in (cursor.description or [])]
                 if not row:
                     return None
-            # excluding id in the row
-            result = dict(zip(schema, row[1:]))
-            result = table(**self.decode(schema, result))
-            result.id = row[0]
-            return result
+            return self._row_to_instance(table, schema, names, row)
         except Exception as e:
             raise self.process_exception(e)
 
@@ -248,9 +274,8 @@ class SQLiteSession(SQLSession):
 
             sql = f"DELETE FROM {table_name} WHERE {where_clause}"
 
-            await self.connection.execute(sql, (*where_values,))
-
-            return True
+            async with self.connection.execute(sql, (*where_values,)) as cursor:
+                return cursor.rowcount > 0
         except Exception as e:
             raise self.process_exception(e)
 
@@ -313,11 +338,22 @@ class SQLiteSession(SQLSession):
         await self.connection.commit()
 
     async def connect(self):
+        directory = os.path.dirname(os.path.abspath(str(self.conn_uri)))
+        if directory and not os.path.isdir(directory):
+            os.makedirs(directory, exist_ok=True)
         self.connection = await aiosqlite.connect(self.conn_uri)
+        await self.connection.execute("PRAGMA foreign_keys = ON")
         return self
 
     async def close(self):
-        await self.connection.close()
+        # connect() may have failed; closing a connection that was never
+        # opened masks the real error with an AttributeError
+        if self.connection is None:
+            return
+        try:
+            await self.connection.close()
+        finally:
+            self.connection = None
 
     @classmethod
     def get_placeholder(cls, count: int):
@@ -338,6 +374,87 @@ class SQLiteSession(SQLSession):
         if dt is None:
             return None
         return dt.strftime(self.get_datetime_format())
+
+    # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
+    async def get_schemas(self) -> List[str]:
+        """SQLite has no schemas (attached databases aside)."""
+        return []
+
+    async def get_tables(self, schema: Optional[str] = None) -> List[str]:
+        result = await self.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' "
+            "ORDER BY name"
+        )
+        return [row["name"] for row in (result.rows or [])]
+
+    async def get_columns(
+        self, table: str, schema: Optional[str] = None
+    ) -> List[ColumnInfo]:
+        table_name = self.quote_identifier(table)
+        result = await self.execute(f"PRAGMA table_info({table_name})")
+        if not result.rows:
+            return []
+
+        indexed = set()
+        for index in await self.get_indexes(table):
+            indexed.update(index.columns)
+
+        columns = []
+        for row in result.rows:
+            columns.append(
+                ColumnInfo(
+                    name=row.get("name"),
+                    type=(row.get("type") or "").upper() or None,
+                    nullable=not bool(row.get("notnull")),
+                    default=row.get("dflt_value"),
+                    primary_key=bool(row.get("pk")),
+                    indexed=row.get("name") in indexed or bool(row.get("pk")),
+                    position=int(row.get("cid") or 0) + 1,
+                )
+            )
+        return columns
+
+    async def get_indexes(
+        self, table: str, schema: Optional[str] = None
+    ) -> List[IndexInfo]:
+        table_name = self.quote_identifier(table)
+        listing = await self.execute(f"PRAGMA index_list({table_name})")
+        indexes = []
+        for row in listing.rows or []:
+            index_name = row.get("name")
+            detail = await self.execute(
+                f"PRAGMA index_info({self.quote_identifier(index_name)})"
+            )
+            columns = [
+                item.get("name") for item in (detail.rows or []) if item.get("name")
+            ]
+            indexes.append(
+                IndexInfo(
+                    name=index_name,
+                    columns=columns,
+                    unique=bool(row.get("unique")),
+                    primary=row.get("origin") == "pk",
+                )
+            )
+        return indexes
+
+    async def count(self, table: str, schema: Optional[str] = None) -> int:
+        result = await self.execute(
+            f"SELECT COUNT(*) AS total FROM {self.quote_identifier(table)}"
+        )
+        rows = result.rows or [{}]
+        return int(rows[0].get("total") or 0)
+
+    @staticmethod
+    def quote_identifier(name: str, schema: Optional[str] = None) -> str:
+        """Quote a table/column identifier for safe interpolation."""
+        quoted = '"' + str(name).replace('"', '""') + '"'
+        if schema:
+            return SQLiteSession.quote_identifier(schema) + "." + quoted
+        return quoted
 
     def process_exception(self, e: Exception):
         if isinstance(e, aiosqlite.IntegrityError):
@@ -360,8 +477,10 @@ class SQLiteSession(SQLSession):
 
 
 class SQLite(Storage):
-    def __init__(self, connection_uri: str):
-        self.conn_uri = connection_uri
+    def __init__(self, connection_uri: str, debug: bool = False):
+        if not connection_uri:
+            raise ValueError("SQLite requires a database path")
+        super().__init__(str(connection_uri), debug=debug)
 
     @asynccontextmanager
     async def session(self):
@@ -369,7 +488,5 @@ class SQLite(Storage):
         try:
             await session.connect()
             yield session
-        except Exception as e:
-            raise e
         finally:
             await session.close()

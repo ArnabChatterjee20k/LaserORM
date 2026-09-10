@@ -559,8 +559,8 @@ class TestSchemaModel:
         assert isinstance(user.tags, list)
         assert user.tags == []
 
-    def test_to_model_excludes_id_field(self):
-        """Test that to_model excludes the id field to avoid conflicts"""
+    def test_to_model_inherits_id_column(self):
+        """to_model does not redeclare id; it inherits Model's id column"""
 
         @dataclass
         class UserSchema(Schema):
@@ -569,14 +569,14 @@ class TestSchemaModel:
 
         UserModel = UserSchema.to_model()
 
-        # Test that id is in annotations (should be excluded but must be part of the class definition)
-        annotations = UserModel.__annotations__
-        assert "id" in annotations
+        assert "id" not in UserModel.__annotations__
+        assert "id" in UserModel.get_schema()
+        assert UserModel.get_schema()["id"]["primary_key"] is True
 
-        # Test that we can still create instances
         user = UserModel(name="Bob", email="bob@example.com")
         assert user.name == "Bob"
         assert user.email == "bob@example.com"
+        assert user.id is None
 
     def test_to_model_with_union_types(self):
         """Test conversion with Union types"""

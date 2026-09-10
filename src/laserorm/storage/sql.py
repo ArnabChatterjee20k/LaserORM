@@ -20,6 +20,39 @@ from ..core.expressions import (
 )
 
 
+#: Python type names that are persisted as JSON documents.
+JSON_TYPE_NAMES = frozenset({"json", "dict", "list", "Dict", "List", "Any"})
+
+
+def _type_names(col_type) -> list[str]:
+    """Normalise a schema ``type`` entry into a flat list of type names."""
+    if col_type is None:
+        return []
+    if isinstance(col_type, str):
+        return [col_type]
+    return list(col_type)
+
+
+def is_json_type(col_type) -> bool:
+    """True when a schema ``type`` entry should be stored as JSON.
+
+    Handles both the plain ``"json"`` marker and unions such as
+    ``["dict", "NoneType"]`` produced by ``dict | None`` annotations.
+    """
+    return any(name in JSON_TYPE_NAMES for name in _type_names(col_type))
+
+
+def has_type(col_type, name: str) -> bool:
+    """True when ``name`` appears in a schema ``type`` entry."""
+    return name in _type_names(col_type)
+
+
+def is_nullable_type(col_type) -> bool:
+    """True when the column accepts NULL."""
+    names = _type_names(col_type)
+    return "NoneType" in names or is_json_type(col_type)
+
+
 class SQLSession(StorageSession):
     async def init_schema(self, model: T) -> str:
         table_name = model.__name__.lower()
@@ -56,27 +89,10 @@ class SQLSession(StorageSession):
                 sql_type = self.python_to_sqltype(col_type)
 
                 # NOT NULL
-                not_null = ""
-                if isinstance(col_type, list) and "NoneType" not in col_type:
-                    not_null = "NOT NULL"
-                elif isinstance(col_type, str) and col_type != "json":
-                    not_null = "NOT NULL"
+                not_null = "" if is_nullable_type(col_type) else "NOT NULL"
 
                 # DEFAULT
-                default_sql = ""
-                if isinstance(default, CurrentTimeStamp):
-                    default_sql = f"DEFAULT {self.get_default_datetime_sql()}"
-
-                elif not isinstance(default, MissingDefault):
-                    if col_type == "json":
-                        default_sql = f"DEFAULT {self.get_default_json_sql()}"
-
-                    elif isinstance(default, str):
-                        default_sql = f"DEFAULT '{default}'"
-                    elif default is None:
-                        default_sql = "DEFAULT NULL"
-                    else:
-                        default_sql = f"DEFAULT {default}"
+                default_sql = self.get_default_sql(default, col_type)
 
                 col_def = " ".join(
                     part
@@ -135,23 +151,25 @@ class SQLSession(StorageSession):
             return True
 
         def validate_collection(values: list[Any], expr: BaseExpression):
-            """Validate a list/tuple against a list[...] type hint"""
+            """Validate every element of an IN/NOT IN list against the column type"""
+            if not isinstance(values, (list, tuple, set)):
+                raise TypeError(f"Expected list/tuple/set for {expr.key}")
+
             type_hint = expr.type_hint
+            if type_hint is None:
+                return
+
             origin = get_origin(type_hint)
             args = get_args(type_hint)
+            # a list[str] column compares against its element type
+            element_type = args[0] if origin is list and args else type_hint
 
-            # TODO: use type resolution like we have in the schema to_model
-            # If column type is list[str], we validate each element as str
-            if origin is list and args:
-                inner_type = args[0]
-                for v in values:
-                    if not validate_value(v, inner_type):
-                        raise TypeError(
-                            f"Invalid IN element type for {expr.key}: {type(v)}. Expected {inner_type}"
-                        )
-            else:
-                if not isinstance(values, (list, tuple, set)):
-                    raise TypeError(f"Expected list/tuple/set for {expr.key}")
+            for value in values:
+                if not validate_value(value, element_type):
+                    raise TypeError(
+                        f"Invalid IN element type for {expr.key}: {type(value)}. "
+                        f"Expected {element_type}"
+                    )
 
         def compile(expr: BaseExpression) -> tuple[str, list[Any]]:
             # recursive types(left + right)
@@ -217,6 +235,48 @@ class SQLSession(StorageSession):
     async def get_placeholder(cls, count: int):
         pass
 
+    def get_default_sql(self, default, col_type) -> str:
+        """Render the ``DEFAULT ...`` fragment for a column, or "" when there is
+        no server side default.
+
+        Python side defaults (``None``, ``default_factory``, lambdas) produce no
+        SQL default: the model always supplies the value at insert time.
+        """
+        if isinstance(default, CurrentTimeStamp):
+            return f"DEFAULT {self.get_default_datetime_sql()}"
+
+        if isinstance(default, MissingDefault) or default is None:
+            return ""
+
+        if callable(default):
+            return ""
+
+        if is_json_type(col_type):
+            if default in ({}, []):
+                return ""
+            return f"DEFAULT {self.quote_literal(json.dumps(default))}"
+
+        if isinstance(default, bool):
+            return f"DEFAULT {self.format_bool_literal(default)}"
+
+        if isinstance(default, (int, float)):
+            return f"DEFAULT {default}"
+
+        if isinstance(default, datetime):
+            value = self.format_datetime_for_db(default)
+            return f"DEFAULT {self.quote_literal(str(value))}"
+
+        return f"DEFAULT {self.quote_literal(str(default))}"
+
+    @staticmethod
+    def quote_literal(value: str) -> str:
+        """Quote a string for inlining into DDL (escapes single quotes)."""
+        escaped = str(value).replace("'", "''")
+        return f"'{escaped}'"
+
+    def format_bool_literal(self, value: bool) -> str:
+        return "TRUE" if value else "FALSE"
+
     def get_default_datetime_sql(self):
         return "CURRENT_TIMESTAMP"
 
@@ -259,9 +319,9 @@ class SQLSession(StorageSession):
         for key, value in values.items():
             if key in schema:
                 key_type = schema.get(key).get("type")
-                if "json" in key_type and value is not None:
-                    new_values[key] = json.dumps(value)
-                elif "datetime" in key_type and isinstance(value, datetime):
+                if is_json_type(key_type) and value is not None:
+                    new_values[key] = self.encode_json(value)
+                elif has_type(key_type, "datetime") and isinstance(value, datetime):
                     new_values[key] = self.format_datetime_for_db(value)
                 else:
                     new_values[key] = value
@@ -272,12 +332,12 @@ class SQLSession(StorageSession):
         for key, value in values.items():
             if key in schema:
                 key_type = schema.get(key).get("type")
-                if "json" in key_type and value is not None:
-                    new_values[key] = json.loads(value)
-                elif "bool" in key_type:
+                if is_json_type(key_type) and value is not None:
+                    new_values[key] = self.decode_json(value)
+                elif has_type(key_type, "bool") and value is not None:
                     new_values[key] = bool(value)
                 elif (
-                    "datetime" in key_type
+                    has_type(key_type, "datetime")
                     and value is not None
                     and isinstance(value, str)
                 ):
@@ -285,6 +345,21 @@ class SQLSession(StorageSession):
                 else:
                     new_values[key] = value
         return new_values
+
+    def encode_json(self, value):
+        """Serialise a Python value for a JSON column."""
+        return json.dumps(value)
+
+    def decode_json(self, value):
+        """Deserialise a JSON column value; already-decoded values pass through."""
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8")
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (ValueError, TypeError):
+                return value
+        return value
 
     @abstractmethod
     def process_exception(self, e: Exception):
