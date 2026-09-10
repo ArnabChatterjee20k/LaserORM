@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "laserorm"
-version = "0.2.0"
+version = "0.3.0"
 description = "A minimalistic async-first ORM: one model, many databases"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,6 +17,11 @@ sqlite = [
 postgres = [
     "asyncpg>=0.30.0",
     "psycopg2-binary>=2.9.11",
+]
+mysql = [
+    "aiomysql>=0.2.0",
+    # MySQL 8 defaults to caching_sha2_password, which pymysql cannot do without it
+    "cryptography>=42.0",
 ]
 
 [dependency-groups]

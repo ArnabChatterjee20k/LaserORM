@@ -54,6 +54,10 @@ def is_nullable_type(col_type) -> bool:
 
 
 class SQLSession(StorageSession):
+    #: MySQL has no RETURNING clause; those adapters read the generated id back
+    #: from the driver instead.
+    supports_returning: bool = True
+
     async def init_schema(self, model: T) -> str:
         table_name = model.__name__.lower()
         schema = model.get_schema()
@@ -118,7 +122,11 @@ class SQLSession(StorageSession):
             values = list(model_values.values())
             placeholders = self.get_placeholder(len(values))
             column_names = ",".join(columns)
-            sql = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders}) RETURNING id"
+            returning = " RETURNING id" if self.supports_returning else ""
+            sql = (
+                f"INSERT INTO {table_name} ({column_names}) "
+                f"VALUES ({placeholders}){returning}"
+            )
             result = await self.execute(sql, values)
             model.id = result.lastrowid
             return model
