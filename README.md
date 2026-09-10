@@ -44,6 +44,10 @@ storage = SQLite("dev.db")
 from laserorm.storage.postgresql import PostgreSQL
 storage = PostgreSQL("postgresql://user:pass@localhost/db")
 
+# MySQL, same model
+from laserorm.storage.mysql import MySQL
+storage = MySQL("mysql://user:pass@localhost:3306/db")
+
 # Same model, same code, different databases
 ```
 
@@ -85,8 +89,11 @@ pip install "git+https://github.com/ArnabChatterjee20k/LaserORM.git#egg=laserorm
 # For PostgreSQL support
 pip install "git+https://github.com/ArnabChatterjee20k/LaserORM.git#egg=laserorm[postgres]"
 
-# For both SQLite and PostgreSQL
-pip install "git+https://github.com/ArnabChatterjee20k/LaserORM.git#egg=laserorm[sqlite,postgres]"
+# For MySQL support
+pip install "git+https://github.com/ArnabChatterjee20k/LaserORM.git#egg=laserorm[mysql]"
+
+# For all of them
+pip install "git+https://github.com/ArnabChatterjee20k/LaserORM.git#egg=laserorm[sqlite,postgres,mysql]"
 
 # Install from a specific branch
 pip install git+https://github.com/ArnabChatterjee20k/LaserORM.git@branch-name
@@ -102,6 +109,9 @@ uv add laserorm[sqlite]
 
 # For PostgreSQL support  
 uv add laserorm[postgres]
+
+# For MySQL support
+uv add laserorm[mysql]
 
 # For development
 uv add --group dev laserorm[sqlite,postgres]
@@ -280,6 +290,18 @@ async with storage.session() as session:
     not_a2 = await session.list(Account, filters=(Account.uid[{"not": ["a2"]}]))
 ```
 
+### Backends
+
+| backend | driver | extra | notes |
+| --- | --- | --- | --- |
+| SQLite | `aiosqlite` | `sqlite` | no schemas; timestamps stored as ISO text |
+| PostgreSQL | `asyncpg` | `postgres` | schemas, JSONB, `RETURNING` |
+| MySQL | `aiomysql` | `mysql` | databases act as schemas; no `RETURNING`, so generated ids are read back from the driver |
+
+Each adapter maps Python types to what the backend actually wants — `str`
+becomes `TEXT` on SQLite and PostgreSQL but `VARCHAR(255)` on MySQL, which
+cannot index or apply `UNIQUE` to a `TEXT` column without a prefix length.
+
 ### Introspection
 
 Every session can describe the database it is connected to, with the same shape
@@ -363,7 +385,7 @@ LaserORM is built on three core principles:
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
 │   Your Model    │───▶│   LaserORM       │───▶│   Any Database  │
-│   (Dataclass)   │    │   (Adapter)      │    │   (SQLite/PG)   │
+│   (Dataclass)   │    │   (Adapter)      │    │ (SQLite/PG/MySQL)│
 └─────────────────┘    └──────────────────┘    └─────────────────┘
 ```
 
