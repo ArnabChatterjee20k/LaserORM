@@ -81,6 +81,12 @@ class PostgreSQLSession(SQLSession):
                     yield conn
 
     async def execute(self, sql: str, *args, force_commit=False) -> ExecutionResult:
+        try:
+            return await self._execute(sql, *args, force_commit=force_commit)
+        except Exception as e:
+            raise self.process_exception(e)
+
+    async def _execute(self, sql: str, *args, force_commit=False) -> ExecutionResult:
         # Flatten args if needed
         if len(args) == 1 and isinstance(args[0], (list, tuple)):
             args = args[0]

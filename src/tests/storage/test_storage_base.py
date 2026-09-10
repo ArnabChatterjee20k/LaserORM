@@ -769,3 +769,22 @@ class BaseStorageTest(ABC):
                 assert without_payload.payload is None
         finally:
             await self.cleanup_storage(storage)
+
+    @pytest.mark.asyncio
+    async def test_execute_normalises_driver_errors(self):
+        """Raw execute() reports errors with the same wording as the CRUD methods."""
+        storage = await self.get_storage()
+
+        try:
+            async with storage.session() as session:
+                await session.init_schema(Account)
+
+                with pytest.raises(Exception) as excinfo:
+                    await session.execute("SELECT * FROM table_that_does_not_exist")
+                assert "Table not found" in str(excinfo.value)
+
+                with pytest.raises(Exception) as excinfo:
+                    await session.execute("SELECT nope_column FROM account")
+                assert "Invalid column" in str(excinfo.value)
+        finally:
+            await self.cleanup_storage(storage)

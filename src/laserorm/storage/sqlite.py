@@ -41,6 +41,12 @@ class SQLiteSession(SQLSession):
         return "1" if value else "0"
 
     async def execute(self, sql: str, *args, force_commit=False) -> ExecutionResult:
+        try:
+            return await self._execute(sql, *args, force_commit=force_commit)
+        except Exception as e:
+            raise self.process_exception(e)
+
+    async def _execute(self, sql: str, *args, force_commit=False) -> ExecutionResult:
         async with self.connection.execute(sql, *args) as cursor:
             # commit is getting controlled externally via transactions
             if force_commit:
