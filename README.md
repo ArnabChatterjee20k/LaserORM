@@ -172,8 +172,8 @@ LaserORM provides a lightweight expression system that lets you build safe, comp
 
 Examples:
 ```python
-from src.laserorm.storage.sqlite import SQLite
-from src.laserorm.core.model import Model
+from laserorm.storage.sqlite import SQLite
+from laserorm.core.model import Model
 
 class Account(Model):
     uid: str
@@ -231,8 +231,8 @@ async with storage.begin() as session:
 `Schema` is a dataclass-first API with built-in metadata, great for portability and explicit defaults. Convert any `Schema` to a runtime `Model` with `to_model()` to leverage expressions.
 
 ```python
-from src.laserorm.core.schema import Schema, create_field, FieldMetadataOptions
-from src.laserorm.storage.sqlite import SQLite
+from laserorm.core.schema import Schema, create_field, FieldMetadataOptions
+from laserorm.storage.sqlite import SQLite
 
 class User(Schema):
     uid: str = create_field(FieldMetadataOptions(index=True))
@@ -260,8 +260,8 @@ Key points:
 `Model` is the runtime-friendly variant that’s expression-enabled out of the box. Just annotate fields to generate columns.
 
 ```python
-from src.laserorm.core.model import Model
-from src.laserorm.storage.sqlite import SQLite
+from laserorm.core.model import Model
+from laserorm.storage.sqlite import SQLite
 
 class Account(Model):
     uid: str
@@ -279,6 +279,42 @@ async with storage.session() as session:
     some = await session.list(Account, filters=(Account.uid[["a1", "a3"]]))
     not_a2 = await session.list(Account, filters=(Account.uid[{"not": ["a2"]}]))
 ```
+
+### Introspection
+
+Every session can describe the database it is connected to, with the same shape
+for every backend:
+
+```python
+async with storage.session() as session:
+    schemas = await session.get_schemas()          # [] on SQLite
+    tables = await session.get_tables()            # ["account", "post", ...]
+    columns = await session.get_columns("account") # list[ColumnInfo]
+    indexes = await session.get_indexes("account") # list[IndexInfo]
+    total = await session.count("account")         # exact row count
+```
+
+`ColumnInfo` carries `name`, `type`, `nullable`, `default`, `primary_key`,
+`indexed` and `position`; `IndexInfo` carries `name`, `columns`, `unique` and
+`primary`. On PostgreSQL, `get_columns` / `get_indexes` / `count` accept an
+optional `schema` (or a `"schema.table"` name).
+
+### Raw queries
+
+`session.execute()` returns an `ExecutionResult`:
+
+| field | meaning |
+| --- | --- |
+| `rows` | result rows as dicts |
+| `description` | `[{"name": ..., "type": ...}]`, identical shape on every adapter |
+| `columns` | just the column names |
+| `returns_rows` | whether the statement produced a result set |
+| `rows_affected` | rows written by an INSERT/UPDATE/DELETE |
+| `rowcount` | rows returned, or rows written for a write |
+| `lastrowid` | id of the row an INSERT created |
+
+`description` is populated even when a `SELECT` matches zero rows, so a UI can
+still render the columns of an empty table.
 
 ### JSON Support
 ```python

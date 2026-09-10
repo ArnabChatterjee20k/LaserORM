@@ -1,5 +1,6 @@
 from typing import get_type_hints, Optional, Union, get_origin, get_args
 from .expressions import Expression
+from .defaults import CurrentTimeStamp, MissingDefault
 from types import UnionType
 import datetime
 import inspect
@@ -211,18 +212,15 @@ class Model(metaclass=Meta):
             # get_origin(field_type) can return None for non-parameterized type hints. Ex- list, dict. And it work ok for list[str], Optional[int]
             origin = get_origin(field_type) or field_type
 
-            column = getattr(cls, field_name, None)
-            metadata = {}
-            # doing getattr will call the get of the Column instance and will return the Expression class
-            if isinstance(column, Expression):
-                metadata = column.metadata
+            column = cls._get_column(field_name)
+            metadata = column.metadata if column is not None else {}
 
-            default = None
-            if isinstance(column, Column) and column.value is not None:
+            default = MissingDefault()
+            if column is not None and column.value is not None:
                 if isinstance(column.value, type) and issubclass(
                     column.value, datetime.datetime
                 ):
-                    default = "CURRENT_TIMESTAMP"
+                    default = CurrentTimeStamp()
                 else:
                     default = column.value
             schema[field_name] = {
@@ -260,6 +258,19 @@ class Model(metaclass=Meta):
                 ]
 
         return schema
+
+    @classmethod
+    def _get_column(cls, field_name: str) -> Optional["Column"]:
+        """Return the ``Column`` descriptor for ``field_name``, or None.
+
+        Uses ``getattr_static`` because a plain getattr runs ``Column.__get__``
+        and yields an ``Expression``, hiding the descriptor and its default.
+        """
+        for base in cls.__mro__:
+            candidate = inspect.getattr_static(base, field_name, None)
+            if isinstance(candidate, Column):
+                return candidate
+        return None
 
     # Unlike dataclasses, classvars aren't ignored in the normal vars. So doing it manually
     @classmethod

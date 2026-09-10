@@ -1,13 +1,26 @@
 from .sql import SQLSession
 from contextlib import asynccontextmanager
-from .storage import T, Storage, ExecutionResult
+from .storage import T, Storage, ExecutionResult, ColumnInfo, IndexInfo
 import asyncpg
 from asyncpg.transaction import Transaction
 import json
+import re
 from datetime import datetime
-from typing import TypeVar, Type, Union, AsyncGenerator, Any
+from typing import TypeVar, Type, Union, AsyncGenerator, Any, Optional, List
 from .storage import Index
 from ..core.expressions import BaseExpression
+
+
+#: Trailing row count in a Postgres command tag, e.g. "INSERT 0 3" -> 3.
+_STATUS_ROWCOUNT = re.compile(r"(\d+)\s*$")
+
+
+def _rows_affected(status: Optional[str]) -> int:
+    """Extract the affected-row count from a Postgres command tag."""
+    if not status:
+        return 0
+    match = _STATUS_ROWCOUNT.search(status.strip())
+    return int(match.group(1)) if match else 0
 
 
 # connect = creates a pool
@@ -37,6 +50,8 @@ class PostgreSQLSession(SQLSession):
             "float": "REAL",
             "datetime": "TIMESTAMP",
             "json": "JSONB",
+            "dict": "JSONB",
+            "list": "JSONB",
             "NoneType": "TEXT",
             "auto_increment": "SERIAL",
         }
@@ -54,6 +69,10 @@ class PostgreSQLSession(SQLSession):
         if self.ongoing_transaction:
             yield self.connection
         else:
+            if self.pool is None:
+                raise ConnectionError(
+                    "PostgreSQL session is not connected - call connect() first"
+                )
             async with self.pool.acquire() as conn:
                 if with_transaction:
                     async with conn.transaction():
@@ -66,27 +85,56 @@ class PostgreSQLSession(SQLSession):
         if len(args) == 1 and isinstance(args[0], (list, tuple)):
             args = args[0]
         async with self.get_connection(with_transaction=force_commit) as connection:
-            # using explicitly prepared statement to get the description of the query and results(very lightweight query will be made)
-            description = None
-            rows: list[asyncpg.Record] = []
-            stmt = await connection.prepare(sql)
-            description = [
-                {
-                    "name": attr.name,
-                    "data_type": (
-                        attr.type.name if hasattr(attr.type, "name") else None
-                    ),
-                }
-                for attr in stmt.get_attributes()
-            ]
-            rows = await stmt.fetch(*args)
-            if rows:
-                rows = [dict(row) for row in rows]
+            # prepared so the result set columns are known even with zero rows
+            try:
+                stmt = await connection.prepare(sql)
+            except asyncpg.PostgresSyntaxError as error:
+                # multi-statement scripts cannot be prepared; the simple query
+                # protocol runs them, but takes no bind parameters
+                if "multiple commands" not in str(error) or args:
+                    raise
+                status = await connection.execute(sql)
+                return ExecutionResult(
+                    rows=[],
+                    lastrowid=None,
+                    rowcount=0,
+                    description=None,
+                    rows_affected=_rows_affected(status),
+                    returns_rows=False,
+                )
+
+            attributes = stmt.get_attributes()
+            returns_rows = bool(attributes)
+            description = (
+                [
+                    {
+                        "name": attribute.name,
+                        "type": (
+                            attribute.type.name
+                            if hasattr(attribute.type, "name")
+                            else None
+                        ),
+                    }
+                    for attribute in attributes
+                ]
+                if returns_rows
+                else None
+            )
+
+            records = await stmt.fetch(*args)
+            rows = [dict(record) for record in records]
+
+            get_status = getattr(stmt, "get_statusmsg", None)
+            status = get_status() if callable(get_status) else None
+            rows_affected = 0 if returns_rows else _rows_affected(status)
+
             return ExecutionResult(
                 rows=rows,
                 lastrowid=(rows[0] if rows else {}).get("id"),
-                rowcount=len(rows),
+                rowcount=len(rows) if returns_rows else rows_affected,
                 description=description,
+                rows_affected=rows_affected,
+                returns_rows=returns_rows,
             )
 
     async def init_index(self, table: str, indexes: list[Index]):
@@ -206,12 +254,10 @@ class PostgreSQLSession(SQLSession):
 
             where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
-            query = f"""
-                SELECT * FROM {table_name}
-                {where_sql}
-                ORDER BY id ASC
-                LIMIT {limit}
-            """
+            limit_sql = "" if limit is None or limit < 0 else f"LIMIT {int(limit)}"
+            query = (
+                f"SELECT * FROM {table_name} {where_sql} ORDER BY id ASC {limit_sql}"
+            )
             async with self.get_connection() as connection:
                 rows = await connection.fetch(query, *values)
 
@@ -357,8 +403,8 @@ class PostgreSQLSession(SQLSession):
             if where_clause:
                 sql += f" WHERE {where_clause}"
 
-            result = await self.ongoing_transaction.execute(sql, *values)
-            return int(result.split()[-1]) if result else 0
+            result = await self.execute(sql, *values)
+            return result.rows_affected
         except Exception as e:
             raise self.process_exception(e)
 
@@ -388,11 +434,21 @@ class PostgreSQLSession(SQLSession):
         return self
 
     async def close(self):
+        # connect() may have failed; closing a pool that was never created
+        # masks the real error with an AttributeError
+        if self.pool is None:
+            self.connection = None
+            self.ongoing_transaction = None
+            return
         if self.ongoing_transaction:
             self.ongoing_transaction = None
-            await self.pool.release(self.connection)
+            if self.connection is not None:
+                await self.pool.release(self.connection)
             self.connection = None
-        await self.pool.close()
+        try:
+            await self.pool.close()
+        finally:
+            self.pool = None
 
     @classmethod
     def get_placeholder(self, count: int):
@@ -417,37 +473,220 @@ class PostgreSQLSession(SQLSession):
             return None
         return dt
 
+    # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
+    async def get_schemas(self) -> List[str]:
+        result = await self.execute(
+            "SELECT nspname AS name FROM pg_catalog.pg_namespace "
+            "WHERE nspname NOT LIKE 'pg\\_%' AND nspname <> 'information_schema' "
+            "ORDER BY nspname"
+        )
+        return [row["name"] for row in (result.rows or [])]
+
+    async def get_tables(self, schema: Optional[str] = None) -> List[str]:
+        result = await self.execute(
+            "SELECT table_name AS name FROM information_schema.tables "
+            "WHERE table_schema = $1 ORDER BY table_name",
+            [schema or "public"],
+        )
+        return [row["name"] for row in (result.rows or [])]
+
+    async def get_columns(
+        self, table: str, schema: Optional[str] = None
+    ) -> List[ColumnInfo]:
+        schema, table = self.split_qualified_name(table, schema)
+        result = await self.execute(
+            "SELECT column_name AS name, "
+            "       data_type AS type, "
+            "       is_nullable = 'YES' AS nullable, "
+            "       column_default AS default_value, "
+            "       ordinal_position AS position "
+            "FROM information_schema.columns "
+            "WHERE table_schema = $1 AND table_name = $2 "
+            "ORDER BY ordinal_position",
+            [schema, table],
+        )
+        if not result.rows:
+            return []
+
+        primary_keys = set()
+        indexed = set()
+        for index in await self.get_indexes(table, schema):
+            indexed.update(index.columns)
+            if index.primary:
+                primary_keys.update(index.columns)
+
+        return [
+            ColumnInfo(
+                name=row["name"],
+                type=row["type"],
+                nullable=bool(row["nullable"]),
+                default=row["default_value"],
+                primary_key=row["name"] in primary_keys,
+                indexed=row["name"] in indexed,
+                position=int(row["position"] or 0),
+            )
+            for row in result.rows
+        ]
+
+    async def get_indexes(
+        self, table: str, schema: Optional[str] = None
+    ) -> List[IndexInfo]:
+        schema, table = self.split_qualified_name(table, schema)
+        result = await self.execute(
+            "SELECT i.relname AS name, "
+            "       ix.indisunique AS is_unique, "
+            "       ix.indisprimary AS is_primary, "
+            "       array_agg(a.attname ORDER BY a.attnum) AS columns "
+            "FROM pg_class t "
+            "JOIN pg_namespace n ON n.oid = t.relnamespace "
+            "JOIN pg_index ix ON t.oid = ix.indrelid "
+            "JOIN pg_class i ON i.oid = ix.indexrelid "
+            "JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey) "
+            "WHERE n.nspname = $1 AND t.relname = $2 "
+            "GROUP BY i.relname, ix.indisunique, ix.indisprimary "
+            "ORDER BY i.relname",
+            [schema, table],
+        )
+        return [
+            IndexInfo(
+                name=row["name"],
+                columns=list(row["columns"] or []),
+                unique=bool(row["is_unique"]),
+                primary=bool(row["is_primary"]),
+            )
+            for row in (result.rows or [])
+        ]
+
+    async def count(self, table: str, schema: Optional[str] = None) -> int:
+        schema, table = self.split_qualified_name(table, schema)
+        qualified = self.quote_identifier(table, schema)
+        result = await self.execute(f"SELECT COUNT(*) AS total FROM {qualified}")
+        rows = result.rows or [{}]
+        return int(rows[0].get("total") or 0)
+
+    @staticmethod
+    def split_qualified_name(table: str, schema: Optional[str] = None):
+        """Split a possibly ``schema.table`` name into its two parts."""
+        if "." in table:
+            table_schema, _, table_name = table.partition(".")
+            return table_schema.strip('"'), table_name.strip('"')
+        return (schema or "public"), table.strip('"')
+
+    @staticmethod
+    def quote_identifier(name: str, schema: Optional[str] = None) -> str:
+        """Quote a table/column identifier for safe interpolation."""
+        quoted = '"' + str(name).replace('"', '""') + '"'
+        if schema:
+            return PostgreSQLSession.quote_identifier(schema) + "." + quoted
+        return quoted
+
     def process_exception(self, e: Exception):
+        """
+        Process and categorize exceptions from asyncpg operations.
+        Handles connection errors, authentication errors, integrity violations,
+        syntax errors, and other PostgreSQL-specific errors.
+        """
+        msg = str(e)
+        error_module = getattr(type(e), "__module__", "")
+        msg_lower = msg.lower()
+
+        # Connection errors - handle first as they're most critical
+        if isinstance(e, asyncpg.PostgresConnectionError):
+            if "connection refused" in msg_lower or "could not connect" in msg_lower:
+                return Exception(
+                    f"Connection refused: Unable to connect to PostgreSQL server. {msg}"
+                )
+            elif "timeout" in msg_lower:
+                return Exception(
+                    f"Connection timeout: Database connection timed out. {msg}"
+                )
+            elif "network" in msg_lower or "socket" in msg_lower:
+                return Exception(f"Network error: Connection network issue. {msg}")
+            elif "connection" in msg_lower and "failure" in msg_lower:
+                return Exception(f"Connection failure: {msg}")
+            return Exception(f"Connection error: {msg}")
+
+        # Authentication errors - check specific types first
+        if isinstance(e, asyncpg.InvalidPasswordError):
+            return Exception(
+                f"Authentication failed: Invalid username or password. {msg}"
+            )
+
+        if isinstance(e, asyncpg.InvalidAuthorizationSpecificationError):
+            return Exception(
+                f"Authorization error: Invalid authorization specification. {msg}"
+            )
+
+        # Integrity constraint violations
         if isinstance(e, asyncpg.IntegrityConstraintViolationError):
-            msg = str(e)
             if "duplicate key value violates unique constraint" in msg:
                 return Exception(f"Duplicate entry error: {msg}")
             elif "violates not-null constraint" in msg:
                 return Exception(f"Missing required field: {msg}")
+            elif "violates foreign key constraint" in msg:
+                return Exception(f"Foreign key constraint violation: {msg}")
+            elif "violates check constraint" in msg:
+                return Exception(f"Check constraint violation: {msg}")
             return Exception(f"Integrity error: {msg}")
 
-        elif isinstance(e, asyncpg.PostgresError):
-            msg = str(e)
-            if "relation" in msg and "does not exist" in msg:
+        # Syntax errors
+        if isinstance(e, asyncpg.PostgresSyntaxError):
+            return Exception(f"SQL syntax error: {msg}")
+
+        # Other PostgreSQL errors (catch-all for PostgresError and its subclasses)
+        if isinstance(e, asyncpg.PostgresError):
+            # Check for authentication errors in message
+            if "password authentication failed" in msg_lower:
+                return Exception(
+                    f"Authentication failed: Invalid username or password. {msg}"
+                )
+            elif "authentication failed" in msg_lower:
+                return Exception(f"Authentication failed: {msg}")
+            # Check for common operational errors
+            elif "relation" in msg_lower and "does not exist" in msg_lower:
                 return Exception(f"Table not found: {msg}")
-            elif "column" in msg and "does not exist" in msg:
+            elif "column" in msg_lower and "does not exist" in msg_lower:
                 return Exception(f"Invalid column: {msg}")
+            elif "permission denied" in msg_lower:
+                return Exception(f"Permission denied: Insufficient privileges. {msg}")
+            elif "database" in msg_lower and "does not exist" in msg_lower:
+                return Exception(f"Database not found: {msg}")
+            elif "syntax error" in msg_lower:
+                return Exception(f"SQL syntax error: {msg}")
+            elif "too many connections" in msg_lower:
+                return Exception(
+                    f"Connection limit exceeded: Too many database connections. {msg}"
+                )
+            elif "server closed the connection" in msg_lower:
+                return Exception(
+                    f"Connection closed: Server closed the connection unexpectedly. {msg}"
+                )
             return Exception(f"PostgreSQL error: {msg}")
 
+        # Check if it's any other asyncpg exception by module name
+        if error_module.startswith("asyncpg"):
+            return Exception(f"AsyncPG error: {msg}")
+
+        # Return original exception if not an asyncpg error
         return e
 
 
 class PostgreSQL(Storage):
-    def __init__(self, connection_uri: str):
-        self.conn_uri = connection_uri
+    def __init__(self, connection_uri: str, debug: bool = False):
+        if not connection_uri:
+            raise ValueError("PostgreSQL requires a connection URI")
+        super().__init__(str(connection_uri), debug=debug)
 
     @asynccontextmanager
     async def session(self):
         session = PostgreSQLSession(self.conn_uri)
         try:
-            await session.connect()
+            try:
+                await session.connect()
+            except Exception as error:
+                raise session.process_exception(error) from error
             yield session
-        except Exception as e:
-            raise e
         finally:
             await session.close()

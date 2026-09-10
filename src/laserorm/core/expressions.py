@@ -274,18 +274,3 @@ class NotInExpression(BaseExpression):
     def name():
         return "not in"
 
-
-@dataclass
-class NotInExpression(BaseExpression):
-    """Represents non-membership: value NOT IN field"""
-
-    key: str
-    value: list[Any]
-    type_hint: Any | None = None
-
-    def __repr__(self):
-        return f"NotIn({self.key} NOT IN {self.value})"
-
-    @staticmethod
-    def name():
-        return "not in"
